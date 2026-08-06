@@ -19,15 +19,16 @@ import Foundation
 final class ControlServer {
     static let shared = ControlServer()
 
-    /// `~/Library/Application Support/DeskBar/control.sock`. Created lazily.
+    /// `~/Library/Application Support/DeskBar/control.sock`. The directory is
+    /// created 0700 so the socket node underneath it is never world-reachable.
     static var socketPath: String {
         let dir = (NSHomeDirectory() as NSString)
             .appendingPathComponent("Library/Application Support/DeskBar")
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(
+            atPath: dir, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
         return (dir as NSString).appendingPathComponent("control.sock")
     }
-
-    private var listenFD: Int32 = -1
 
     // MARK: - Lifecycle
 
@@ -52,27 +53,29 @@ final class ControlServer {
             }
         }
         let size = socklen_t(MemoryLayout<sockaddr_un>.size)
+        // Create the socket node with 0600 from the start — chmod-after-bind
+        // would leave a brief window at the directory umask. Restore the mask
+        // immediately after.
+        let savedMask = umask(0o177)
         let bindRC = withUnsafePointer(to: &addr) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, size) }
         }
+        umask(savedMask)
         guard bindRC == 0 else {
             NSLog("DeskBar control: bind() failed errno=\(errno)"); close(fd); return
         }
-        chmod(path, 0o600)   // this user only
         guard listen(fd, 8) == 0 else {
             NSLog("DeskBar control: listen() failed errno=\(errno)"); close(fd); return
         }
-        listenFD = fd
         NSLog("DeskBar control: listening on \(path)")
 
-        // Accept on a background thread; each connection is handled inline
-        // (requests are short and serialized, which suits a single desk fine).
-        DispatchQueue.global(qos: .userInitiated).async { [fd] in
+        // Accept on a background thread.
+        DispatchQueue.global(qos: .userInitiated).async {
             Self.acceptLoop(fd: fd)
         }
     }
 
-    // MARK: - Socket plumbing (background thread, no actor state touched)
+    // MARK: - Socket plumbing (background threads, no actor state touched)
 
     private static func acceptLoop(fd: Int32) {
         while true {
@@ -82,6 +85,14 @@ final class ControlServer {
                 NSLog("DeskBar control: accept() failed errno=\(errno)")
                 break
             }
+            // Don't let a write to a peer that closed first raise SIGPIPE and
+            // take down the whole app — the very crash class this server exists
+            // to avoid. Per-socket SO_NOSIGPIPE turns that into a normal EPIPE.
+            var on: Int32 = 1
+            setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+            // Handled serially — a single desk does one thing at a time, and the
+            // assistant driving this is itself blocked awaiting a move, so there's
+            // no concurrent request to service. Keeps the server simple.
             handleClient(client)
         }
     }
@@ -89,8 +100,7 @@ final class ControlServer {
     private static func handleClient(_ client: Int32) {
         defer { close(client) }
         guard let line = readLine(client) else { return }
-        let reply = process(requestLine: line)
-        var out = reply
+        var out = process(requestLine: line)
         out.append(0x0A)
         out.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return }
@@ -119,29 +129,50 @@ final class ControlServer {
 
     // MARK: - Request handling
 
+    /// Holds a value being handed between the socket thread and a `@MainActor`
+    /// task. Only ever written on one side of a semaphore and read on the other,
+    /// so the access is serialized — `@unchecked Sendable` documents that.
+    private final class Box<T>: @unchecked Sendable {
+        var value: T
+        init(_ value: T) { self.value = value }
+    }
+
     private static func process(requestLine: Data) -> Data {
         let obj = (try? JSONSerialization.jsonObject(with: requestLine)) as? [String: Any]
         guard let cmd = obj?["cmd"] as? String else {
             return encode(["ok": false, "error": "Malformed request (expected JSON with a \"cmd\")."])
         }
+        // Decode into Sendable primitives on this thread so nothing non-Sendable
+        // crosses into the main-actor task below.
+        let heightArg = number(obj?["height_cm"])
+        let deltaArg = number(obj?["delta_cm"])
 
         // Bridge into the main actor (where DeskController and all CoreBluetooth
         // work live) and wait for the result. The handler itself yields with
         // `await Task.sleep` while a move is in flight, so the main thread stays
-        // free to service BLE height notifications — only THIS background socket
-        // thread blocks on the semaphore.
+        // free to service BLE height notifications — only THIS worker thread
+        // blocks on the semaphore. The reply comes back as `Data` (Sendable).
+        let box = Box<Data>(encode(["ok": false, "error": "No result"]))
         let sem = DispatchSemaphore(value: 0)
-        var result: [String: Any] = ["ok": false, "error": "No result"]
         Task { @MainActor in
-            result = await DeskBridge.handle(cmd: cmd, args: obj ?? [:])
+            let dict = await DeskBridge.handle(cmd: cmd, heightArg: heightArg, deltaArg: deltaArg)
+            box.value = encode(dict)
             sem.signal()
         }
         sem.wait()
-        return encode(result)
+        return box.value
     }
 
     private static func encode(_ dict: [String: Any]) -> Data {
         (try? JSONSerialization.data(withJSONObject: dict)) ?? Data("{\"ok\":false}".utf8)
+    }
+
+    private static func number(_ any: Any?) -> Double? {
+        if let d = any as? Double { return d }
+        if let i = any as? Int { return Double(i) }
+        if let n = any as? NSNumber { return n.doubleValue }
+        if let s = any as? String { return Double(s) }
+        return nil
     }
 }
 
@@ -151,14 +182,14 @@ final class ControlServer {
 private enum DeskBridge {
     private static let moveTimeout: TimeInterval = 45
 
-    static func handle(cmd: String, args: [String: Any]) async -> [String: Any] {
+    static func handle(cmd: String, heightArg: Double?, deltaArg: Double?) async -> [String: Any] {
         let desk = DeskController.shared
         switch cmd {
         case "status":
             return snapshot(ok: true)
 
         case "set_height":
-            guard let cm = number(args["height_cm"]) else {
+            guard let cm = heightArg else {
                 return snapshot(ok: false, error: "set_height needs a numeric \"height_cm\".")
             }
             return await move { desk.moveTo(cm: cm) }
@@ -170,7 +201,7 @@ private enum DeskBridge {
             return await move { desk.goStand() }
 
         case "nudge":
-            guard let delta = number(args["delta_cm"]) else {
+            guard let delta = deltaArg else {
                 return snapshot(ok: false, error: "nudge needs a numeric \"delta_cm\".")
             }
             return await move { desk.nudge(delta) }
@@ -188,6 +219,8 @@ private enum DeskBridge {
     }
 
     /// Issue a movement and wait (yielding) until the desk stops or we time out.
+    /// Reports `ok:false` when the desk stalled/was stopped short of the target
+    /// rather than silently claiming success.
     private static func move(_ action: () -> Void) async -> [String: Any] {
         let desk = DeskController.shared
         guard desk.isReady else {
@@ -203,6 +236,9 @@ private enum DeskBridge {
         if desk.isMoving {
             desk.stop()
             return snapshot(ok: false, error: "Desk didn't reach the target in time; stopped.")
+        }
+        if !desk.lastMoveReachedTarget {
+            return snapshot(ok: false, error: "Desk stopped short of the target (obstruction or travel limit).")
         }
         return snapshot(ok: true)
     }
@@ -236,13 +272,5 @@ private enum DeskBridge {
         ]
         if let error { d["error"] = error }
         return d
-    }
-
-    private static func number(_ any: Any?) -> Double? {
-        if let d = any as? Double { return d }
-        if let i = any as? Int { return Double(i) }
-        if let n = any as? NSNumber { return n.doubleValue }
-        if let s = any as? String { return Double(s) }
-        return nil
     }
 }

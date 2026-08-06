@@ -12,6 +12,7 @@ DeskBar/                 # The native macOS menu-bar app (Swift)
   Sources/
     DeskBarApp.swift     # @main App: MenuBarExtra, single-instance guard, hotkey wiring
     DeskController.swift  # CoreBluetooth: connect/scan, the LINAK protocol, move logic
+    ControlServer.swift  # Unix-socket control endpoint the MCP server drives (all BLE stays here)
     HotKeyManager.swift   # Carbon global hotkeys + KeyCombo + ShortcutSettings model
     PopoverView.swift     # The menu-bar popover UI
     ShortcutSettingsView.swift  # The "Shortcuts…" recorder window
@@ -25,7 +26,9 @@ prototype/               # Python/bleak tools that reverse-engineered the protoc
   desk.py                # scan / info / monitor / up / down / to / diag
   test_idasen.py         # minimal move test via the idasen library
 mcp/                     # MCP server so an AI assistant can drive the desk
-  desk_mcp.py            # stdio MCP server (tools: get_status, stand, sit, set_height, nudge, list_desks)
+  desk_mcp.py            # stdio MCP server; relays to the app's control socket, no BLE
+                         #   (tools: get_status, stand, sit, set_height, nudge, stop, list_desks)
+  test_client.py         # spawns desk_mcp.py over stdio and calls one tool
 ```
 
 ## Prerequisites
@@ -57,9 +60,16 @@ python3 -m venv .venv
 
 ## Run the MCP server
 
+**The DeskBar app must be running** — the MCP server does no Bluetooth itself. It relays
+commands over a Unix-domain socket (`~/Library/Application Support/DeskBar/control.sock`) to
+the app, which owns the Bluetooth permission and holds the live connection. This is deliberate:
+macOS attributes a CoreBluetooth request to the *responsible* process, so when the server is
+spawned by the `claude` CLI (no `NSBluetoothAlwaysUsageDescription`), TCC hard-aborts it
+(SIGABRT → "Connection closed") the instant it touches BLE. See `ControlServer.swift`.
+
 ```bash
 ./.venv/bin/python -m pip install -r mcp/requirements.txt
-DESK_ADDRESS="<your-desk-uuid>" ./.venv/bin/python mcp/desk_mcp.py
+./.venv/bin/python mcp/desk_mcp.py            # or: mcp/test_client.py get_status
 ```
 
 Register it with an MCP client (Claude Code example):
@@ -68,8 +78,9 @@ Register it with an MCP client (Claude Code example):
 claude mcp add deskbar -- /absolute/path/.venv/bin/python /absolute/path/mcp/desk_mcp.py
 ```
 
-The server reads Sit/Stand/nudge presets from the app's preferences (`com.pedro.deskbar`), so
-they stay in sync with the app.
+No `DESK_ADDRESS` or Bluetooth setup for the server — the app handles the desk (pick it once
+via **Desk → Switch…**) and is the single source of truth for presets. MCP servers are
+long-lived, so after first registering or editing `desk_mcp.py`, reconnect/restart the client.
 
 ## The LINAK DPG1C protocol (the crucial knowledge)
 
@@ -87,7 +98,8 @@ was the single biggest gotcha. Characteristics share the base
 Move sequence: **(1)** DPG handshake — `7f 86 00` then `7f 86 80 01…11` to `99fa0011`, then
 `FE 00` to command; **(2)** prime with `FE 00` + `FF 00`; **(3)** spam the target to `99fa0031`
 (~every 0.1 s) until reached. Height: little-endian, `cm = raw/100 + 62.0` (range ~62–127 cm).
-The Swift app reimplements this in `DeskController.swift`; the Python side gets it from `idasen`.
+The Swift app reimplements this in `DeskController.swift`; the Python `prototype/` gets it from
+`idasen`. (The MCP server no longer does BLE — it relays to the app; see below.)
 
 ## House style / conventions
 

@@ -13,9 +13,9 @@ signed bundle that owns the Bluetooth permission and holds the live connection.
 Start the DeskBar app first (it opens the control socket on launch). Run (stdio):
     ./.venv/bin/python mcp/desk_mcp.py
 """
+import asyncio
 import json
 import os
-import socket
 
 from mcp.server.mcpserver import MCPServer
 
@@ -32,36 +32,54 @@ server = MCPServer(
     instructions=(
         "Controls a LINAK standing desk via the DeskBar macOS app. Use `get_status` "
         "to read the current height and presets, `stand`/`sit` for the saved presets, "
-        "`set_height` for an absolute height in cm, and `nudge` for a relative move. "
+        "`set_height` for an absolute height in cm, `nudge` for a relative move, and "
+        "`stop` to cancel a move in progress. "
         "Heights are in centimetres, roughly 62–127. Movement tools block until the "
         "desk arrives. If calls report the app isn't reachable, launch DeskBar.app."
     ),
 )
 
 
-def _request(payload: dict, timeout: float = REQUEST_TIMEOUT) -> dict:
-    """Send one JSON command to the DeskBar app and return its JSON reply."""
+_APP_DOWN = {"ok": False, "error": (
+    "The DeskBar app isn't running (control socket not reachable). "
+    "Launch DeskBar.app, then try again."
+)}
+
+
+async def _request(payload: dict, timeout: float = REQUEST_TIMEOUT) -> dict:
+    """Send one JSON command to the DeskBar app and return its JSON reply.
+
+    Uses asyncio streams throughout so a long move (the app blocks the reply
+    until the desk arrives, up to ~45s) never blocks the event loop — other
+    tool calls, cancellation, and transport I/O keep flowing.
+    """
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(timeout)
-            s.connect(SOCKET_PATH)
-            s.sendall((json.dumps(payload) + "\n").encode())
-            buf = b""
-            while not buf.endswith(b"\n"):
-                chunk = s.recv(4096)
-                if not chunk:
-                    break
-                buf += chunk
-        return json.loads(buf.decode())
-    except FileNotFoundError:
-        return {"ok": False, "error": (
-            "The DeskBar app isn't running (control socket not found). "
-            "Launch DeskBar.app, then try again."
-        )}
-    except (ConnectionRefusedError, OSError, socket.timeout) as e:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_unix_connection(SOCKET_PATH), timeout=5.0)
+    except (FileNotFoundError, ConnectionRefusedError):
+        return dict(_APP_DOWN)
+    except (asyncio.TimeoutError, OSError) as e:
         return {"ok": False, "error": (
             f"Couldn't reach the DeskBar app ({type(e).__name__}: {e}). Is it running?"
         )}
+
+    try:
+        writer.write((json.dumps(payload) + "\n").encode())
+        await writer.drain()
+        line = await asyncio.wait_for(reader.readline(), timeout=timeout)
+    except (asyncio.TimeoutError, OSError) as e:
+        return {"ok": False, "error": (
+            f"Lost contact with the DeskBar app ({type(e).__name__}: {e})."
+        )}
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except OSError:
+            pass
+
+    try:
+        return json.loads(line.decode())
     except (json.JSONDecodeError, ValueError) as e:
         return {"ok": False, "error": f"Unexpected reply from the DeskBar app ({e})."}
 
@@ -94,37 +112,47 @@ def _moved(r: dict) -> str:
 @server.tool()
 async def get_status() -> str:
     """Report the desk's current height, posture, and saved presets."""
-    return _describe(_request({"cmd": "status"}))
+    return _describe(await _request({"cmd": "status"}))
 
 
 @server.tool()
 async def stand() -> str:
     """Raise the desk to the saved Stand preset height."""
-    return _moved(_request({"cmd": "stand"}))
+    return _moved(await _request({"cmd": "stand"}))
 
 
 @server.tool()
 async def sit() -> str:
     """Lower the desk to the saved Sit preset height."""
-    return _moved(_request({"cmd": "sit"}))
+    return _moved(await _request({"cmd": "sit"}))
 
 
 @server.tool()
 async def set_height(height_cm: float) -> str:
     """Move the desk to an absolute height in centimetres (clamped to ~62–127)."""
-    return _moved(_request({"cmd": "set_height", "height_cm": height_cm}))
+    return _moved(await _request({"cmd": "set_height", "height_cm": height_cm}))
 
 
 @server.tool()
 async def nudge(delta_cm: float) -> str:
     """Move the desk up (positive) or down (negative) by a relative amount in cm."""
-    return _moved(_request({"cmd": "nudge", "delta_cm": delta_cm}))
+    return _moved(await _request({"cmd": "nudge", "delta_cm": delta_cm}))
+
+
+@server.tool()
+async def stop() -> str:
+    """Immediately stop the desk if it's moving (e.g. to cancel a bad move)."""
+    r = await _request({"cmd": "stop"})
+    if not r.get("ok"):
+        return r.get("error", "Couldn't stop the desk.")
+    return (f"Stopped. Desk is at {r.get('height_cm', 0):.1f} cm "
+            f"({r.get('posture', 'unknown')}).")
 
 
 @server.tool()
 async def list_desks() -> str:
     """Scan for nearby LINAK desks and list them with signal strength."""
-    r = _request({"cmd": "scan"}, timeout=15.0)
+    r = await _request({"cmd": "scan"}, timeout=15.0)
     if not r.get("ok"):
         return r.get("error", "Couldn't scan for desks.")
     desks = r.get("desks", [])

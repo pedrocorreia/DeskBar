@@ -3,10 +3,10 @@
 Local test harness for the DeskBar MCP server. Spawns desk_mcp.py over stdio
 (exactly as a real MCP client would) and calls a tool.
 
-Run from the repo root with the venv python so the child inherits mcp+idasen and
-your terminal's Bluetooth permission:
+The DeskBar app must be running — the server relays moves to it over the control
+socket and does no Bluetooth itself, so the only dependency here is `mcp`:
 
-    ./.venv/bin/python mcp/test_client.py --list          # MCP handshake only, no Bluetooth
+    ./.venv/bin/python mcp/test_client.py --list          # MCP handshake only, no app needed
     ./.venv/bin/python mcp/test_client.py get_status       # read height (no movement)
     ./.venv/bin/python mcp/test_client.py nudge 2          # move up 2 cm  (⚠ moves the desk)
     ./.venv/bin/python mcp/test_client.py set_height 100   # move to 100 cm (⚠ moves the desk)
