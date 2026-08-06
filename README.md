@@ -25,7 +25,25 @@ controller (a desk advertising as `DESK ####`).
 - 📏 **Live height** shown right in the menu bar.
 - 🔀 **Desk switcher** — scan and pick between multiple desks by Bluetooth signal strength.
 - 🔌 **Auto-connect & auto-reconnect** to your last desk on launch.
+- 🤖 **AI control (MCP)** — drive the desk from Claude or any MCP client in natural language.
 - 🐍 **Python prototype** for discovery, debugging, and scripting.
+
+## Control it with AI (MCP)
+
+DeskBar ships an [MCP](https://modelcontextprotocol.io) server (`mcp/desk_mcp.py`) that exposes
+the desk as tools — `get_status`, `stand`, `sit`, `set_height`, `nudge`, `list_desks` — so an AI
+assistant can move it for you: *"put my desk in standing mode for the next hour."*
+
+```bash
+./.venv/bin/python -m pip install -r mcp/requirements.txt
+
+# Register with Claude Code (use absolute paths):
+claude mcp add deskbar -- /abs/path/.venv/bin/python /abs/path/mcp/desk_mcp.py
+```
+
+Set `DESK_ADDRESS` to your desk's CoreBluetooth UUID (from `desk.py scan`) if it isn't the
+default. The server reads your Sit/Stand presets from the app, so they stay in sync. The MCP
+process needs Bluetooth access on the same Mac as the desk.
 
 ## Repo layout
 
