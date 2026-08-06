@@ -1,5 +1,5 @@
 import Foundation
-import CoreBluetooth
+@preconcurrency import CoreBluetooth
 
 // LINAK DPG1C BLE protocol. See prototype/ and the project memory for how this
 // was reverse-engineered. Char UUIDs all share the …-338a-1024-8a49-009c0215f78a base.
@@ -64,6 +64,12 @@ final class DeskController: NSObject, ObservableObject {
     private var lastProgressHeight = 0.0
     private var lastProgressTime = Date()
 
+    // CoreBluetooth's connect() has no timeout: if the target peripheral isn't
+    // actually advertising (BLE-asleep, out of range, stale discovery), it hangs
+    // on "Connecting…" forever. This timer promotes any stuck connect attempt to
+    // an active re-scan after a grace period.
+    private var connectTimeoutTimer: Timer?
+
     // Known desk identifier (from the prototype scan). Falls back to scanning.
     private let defaultUUID = "A6EB36A7-8AB4-E267-D74C-B9E8D1EC8195"
 
@@ -125,6 +131,7 @@ final class DeskController: NSObject, ObservableObject {
             newP.delegate = self
             statusText = "Connecting…"
             central.connect(newP)
+            scheduleConnectTimeout(for: newP)
         }
     }
 
@@ -223,6 +230,7 @@ final class DeskController: NSObject, ObservableObject {
                 peripheral = p
                 p.delegate = self
                 central.connect(p)
+                scheduleConnectTimeout(for: p)
                 return
             }
         }
@@ -276,11 +284,14 @@ extension DeskController: CBCentralManagerDelegate {
             peripheral.delegate = self
             self.statusText = "Connecting…"
             central.connect(peripheral)
+            self.scheduleConnectTimeout(for: peripheral)
         }
     }
 
     nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         Task { @MainActor in
+            self.connectTimeoutTimer?.invalidate()
+            self.connectTimeoutTimer = nil
             if let n = peripheral.name, !n.isEmpty { self.deskName = n }
             self.statusText = "Discovering…"
             peripheral.discoverServices(nil)
@@ -295,7 +306,24 @@ extension DeskController: CBCentralManagerDelegate {
             self.isReady = false
             self.chars = [:]
             self.statusText = "Disconnected — reconnecting…"
-            self.central.connect(peripheral)   // auto-reconnect
+            self.central.connect(peripheral)   // fast path: works if the desk is already advertising
+            self.scheduleConnectTimeout(for: peripheral)
+        }
+    }
+
+    /// After a grace period, if a connect() call above hasn't landed, cancel it and
+    /// fall back to an active scan. CoreBluetooth's connect() has no built-in
+    /// timeout, so without this a stale/out-of-range/BLE-asleep peripheral leaves
+    /// the UI stuck on "Connecting…" forever.
+    private func scheduleConnectTimeout(for peripheral: CBPeripheral) {
+        connectTimeoutTimer?.invalidate()
+        connectTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 6.0, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.peripheral?.identifier == peripheral.identifier, !self.isReady else { return }
+                self.central.cancelPeripheralConnection(peripheral)
+                self.statusText = "Desk not responding — scanning…"
+                self.connectKnownOrScan()
+            }
         }
     }
 
