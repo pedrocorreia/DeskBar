@@ -34,3 +34,19 @@ codesign --force --deep --sign - \
 
 echo "Done → $(pwd)/$APP"
 echo "Launch with:  open \"$(pwd)/$APP\""
+
+# Spotlight's search UI only surfaces apps living in /Applications,
+# ~/Applications, or /System/Applications — a dev-folder build is indexed in
+# the raw metadata DB (mdfind can see it) but filtered out of that UI. Pass
+# --install to actually install the app so Spotlight picks it up.
+if [[ "${1:-}" == "--install" ]]; then
+    DEST="$HOME/Applications/$APP"
+    echo "Installing to $DEST …"
+    mkdir -p "$HOME/Applications"
+    rm -rf "$DEST"
+    cp -R "$APP" "$DEST"
+    LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+    "$LSREGISTER" -f "$DEST"
+    mdimport "$DEST" 2>/dev/null || true
+    echo "Installed → $DEST (should now appear in Spotlight)"
+fi

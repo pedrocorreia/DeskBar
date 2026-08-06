@@ -55,6 +55,11 @@ open DeskBar.app
 On first launch, macOS asks for **Bluetooth permission** — click Allow. A chair icon appears
 in the menu bar; click it for Sit/Stand, nudge, stop, and the desk switcher.
 
+**Want it in Spotlight?** A build left in a dev folder is indexed by Spotlight's raw metadata
+DB but filtered out of the search UI, which only shows apps from `~/Applications`,
+`/Applications`, or `/System/Applications`. Run `./build.sh --install` instead to install to
+`~/Applications` and register it with Launch Services.
+
 **Pairing / switching desks:** open the panel → **Desk → Switch…** → pick the desk with the
 strongest signal (that's the one you're sitting at). Your choice is remembered.
 
