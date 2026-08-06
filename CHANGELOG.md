@@ -40,6 +40,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matches your physical panel. The usable maximum tracks it (minimum + a fixed 65 cm travel),
   and changing it refreshes the readout immediately.
 
+## [1.3.0] - 2026-08-06
+
+### Added
+- **Local control socket for the MCP server.** DeskBar now opens a Unix-domain
+  socket (`~/Library/Application Support/DeskBar/control.sock`, 0600) on launch and
+  performs all desk moves requested over it. The `deskbar` MCP server talks to this
+  socket instead of driving Bluetooth itself.
+- **`stop` MCP tool** to halt the desk (e.g. cancel a preset/hotkey-initiated move).
+
+### Fixed
+- **MCP server no longer crashes under Claude Code.** macOS attributes a
+  CoreBluetooth request to the *responsible* process; when the MCP server's Python
+  was spawned by the `claude` CLI (which has no `NSBluetoothAlwaysUsageDescription`),
+  TCC hard-aborted the process (SIGABRT → "Connection closed") on the first BLE call.
+  Routing all Bluetooth through the signed, Bluetooth-granted app fixes this — the
+  MCP server never links CoreBluetooth. No re-registration or launcher needed.
+- **A stalled or stopped-short move is no longer reported as success** — the control
+  socket surfaces whether the desk actually reached its target.
+- **Robustness:** `SO_NOSIGPIPE` on control connections (a client that hangs up mid-reply
+  can no longer take the app down); the MCP client uses non-blocking async socket I/O so a
+  long move doesn't stall its event loop; and the socket is created 0600 from the start.
+
 ## [1.2.0] - 2026-08-06
 
 ### Added
