@@ -21,6 +21,9 @@ swiftc -O \
 
 echo "Installing Info.plist…"
 cp Info.plist "$APP/Contents/Info.plist"
+
+echo "Installing app icon…"
+cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 # PkgInfo helps Launch Services recognise the bundle.
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
