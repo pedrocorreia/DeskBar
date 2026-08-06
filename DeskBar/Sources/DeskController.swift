@@ -36,6 +36,14 @@ struct DiscoveredDesk: Identifiable, Equatable {
 
 @MainActor
 final class DeskController: NSObject, ObservableObject {
+    // `_desk.wrappedValue` in DeskBarApp.init() reads a @StateObject before
+    // SwiftUI has installed its storage, which hands back a throwaway instance
+    // from the autoclosure rather than the one the UI actually uses — hotkeys
+    // wired to that throwaway silently read stale state (e.g. nudgeCm frozen
+    // at its launch-time value). Backing the @StateObject with a shared
+    // singleton means "a new instance" always resolves to the same object.
+    static let shared = DeskController()
+
     // Published UI state
     @Published var heightCm: Double = 0
     @Published var speed: Int = 0
@@ -52,6 +60,15 @@ final class DeskController: NSObject, ObservableObject {
     // User presets (persisted)
     @Published var sitCm: Double  { didSet { UserDefaults.standard.set(sitCm, forKey: "sitCm") } }
     @Published var standCm: Double { didSet { UserDefaults.standard.set(standCm, forKey: "standCm") } }
+
+    // Nudge step, user-configurable (persisted). Clamped to a sane physical range.
+    @Published var nudgeCm: Double {
+        didSet {
+            let clamped = min(max(nudgeCm, 0.5), 20.0)
+            if clamped != nudgeCm { nudgeCm = clamped }
+            UserDefaults.standard.set(nudgeCm, forKey: "nudgeCm")
+        }
+    }
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -77,11 +94,16 @@ final class DeskController: NSObject, ObservableObject {
         let d = UserDefaults.standard
         sitCm = d.object(forKey: "sitCm") as? Double ?? 74.0
         standCm = d.object(forKey: "standCm") as? Double ?? 110.0
+        nudgeCm = d.object(forKey: "nudgeCm") as? Double ?? 2.0
         super.init()
         central = CBCentralManager(delegate: self, queue: .main)
     }
 
     var isStanding: Bool { heightCm >= (sitCm + standCm) / 2 }
+
+    /// CoreBluetooth UUID of the currently connected/selected desk (macOS-specific,
+    /// not the hardware MAC — same identifier `desk.py scan` prints).
+    var deskID: String { peripheral?.identifier.uuidString ?? "" }
 
     // MARK: - Public actions
 
