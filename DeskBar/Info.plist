@@ -2,29 +2,29 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key>
-    <string>DeskBar</string>
-    <key>CFBundleDisplayName</key>
-    <string>DeskBar</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.pedro.deskbar</string>
-    <key>CFBundleExecutable</key>
-    <string>DeskBar</string>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>1.1</string>
-    <key>CFBundleVersion</key>
-    <string>2</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>NSBluetoothAlwaysUsageDescription</key>
-    <string>DeskBar uses Bluetooth to control your LINAK standing desk.</string>
-    <key>NSHumanReadableCopyright</key>
-    <string>Personal project.</string>
+	<key>CFBundleDisplayName</key>
+	<string>DeskBar</string>
+	<key>CFBundleExecutable</key>
+	<string>DeskBar</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.pedro.deskbar</string>
+	<key>CFBundleName</key>
+	<string>DeskBar</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.2</string>
+	<key>CFBundleVersion</key>
+	<string>3</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>DeskBar uses Bluetooth to control your LINAK standing desk.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Personal project.</string>
 </dict>
 </plist>
