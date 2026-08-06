@@ -111,12 +111,15 @@ struct PopoverView: View {
             HStack {
                 Text("Nudge amount").font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                TextField("", value: Binding(get: { desk.nudgeCm }, set: { desk.setNudgeCm($0) }),
-                          format: .number.precision(.fractionLength(0...1)))
+                TextField("", value: $desk.nudgeCm, format: .number.precision(.fractionLength(0...1)))
                     .frame(width: 40)
                     .multilineTextAlignment(.trailing)
                     .textFieldStyle(.roundedBorder)
                     .controlSize(.small)
+                    // Binding(get:set:) here would rebuild identity every
+                    // render and risk fighting in-progress typing — clamp on
+                    // commit instead, via the direct binding.
+                    .onSubmit { desk.setNudgeCm(desk.nudgeCm) }
                 Text("cm").font(.caption).foregroundStyle(.secondary)
             }
         }

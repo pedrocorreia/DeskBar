@@ -5,7 +5,6 @@ import Carbon.HIToolbox
 struct ShortcutSettingsView: View {
     @ObservedObject var shortcuts: ShortcutSettings
     @ObservedObject var hotkeys: HotKeyManager
-    @Environment(\.scenePhase) private var scenePhase
 
     /// Which action's field currently owns the recording monitor, if any.
     /// Centralized here (rather than per-field @State) so arming one field
@@ -38,11 +37,16 @@ struct ShortcutSettingsView: View {
         }
         .padding(20)
         .frame(width: 340)
-        .onChange(of: scenePhase) { phase in
-            // Recording suspends every global hotkey (see ShortcutRecorderField).
-            // If the user arms a field then switches to another app instead of
-            // pressing a combo, that suspension would otherwise never lift.
-            guard phase != .active, activeRecorder != nil else { return }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { note in
+            // scenePhase is unreliable here — this is an LSUIElement (accessory)
+            // app, which is never "active" in the normal sense, so scenePhase
+            // may just sit at .active forever and never signal an app switch.
+            // The window losing key status is the actual reliable signal.
+            // didResignKeyNotification fires for any window in the app, so
+            // filter to this one by title (SwiftUI gives no cleaner handle here
+            // short of an NSViewRepresentable).
+            guard (note.object as? NSWindow)?.title == "DeskBar Shortcuts",
+                  activeRecorder != nil else { return }
             activeRecorder = nil
             hotkeys.resume()
         }
@@ -151,7 +155,11 @@ struct ShortcutRecorderField: View {
     private func stopRecording() {
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
-        if activeRecorder == actionKey { activeRecorder = nil }
+        // Only resume if we're the one who suspended — a stale onDisappear
+        // from a field that's no longer the active recorder must not resume
+        // on top of whichever field actually owns the suspension now.
+        guard activeRecorder == actionKey else { return }
+        activeRecorder = nil
         hotkeys.resume()
     }
 
