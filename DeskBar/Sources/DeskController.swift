@@ -24,9 +24,12 @@ private enum Cmd {
                             0x10, 0x11])
 }
 
-// Physical limits (metres) for LINAK desks.
-private let kMinCm = 62.0
-private let kMaxCm = 127.0
+// LINAK desks report height as an offset above their mechanical minimum, so
+// converting the raw BLE value into an absolute cm reading means adding that
+// minimum back. The minimum varies by model (and by any display offset set on
+// the physical panel), so it's user-calibratable — see DeskController.minCm.
+// The usable travel above the minimum is a fixed hardware span.
+private let kTravelCm = 65.0   // was kMaxCm(127) − kMinCm(62)
 
 struct DiscoveredDesk: Identifiable, Equatable {
     let id: UUID
@@ -67,6 +70,26 @@ final class DeskController: NSObject, ObservableObject {
     @Published var sitCm: Double  { didSet { UserDefaults.standard.set(sitCm, forKey: "sitCm") } }
     @Published var standCm: Double { didSet { UserDefaults.standard.set(standCm, forKey: "standCm") } }
 
+    // Local, user-assigned desk nicknames, keyed by CoreBluetooth peripheral
+    // UUID (the same id as deskID / deskUUID). Purely local — it never touches
+    // the desk's advertised BLE name.
+    @Published private var nicknames: [String: String] {
+        didSet { UserDefaults.standard.set(nicknames, forKey: "deskNicknames") }
+    }
+
+    /// The user's nickname for a desk id, or nil if none (blank counts as none).
+    func nickname(for id: String) -> String? {
+        guard !id.isEmpty, let n = nicknames[id], !n.isEmpty else { return nil }
+        return n
+    }
+
+    func setNickname(_ name: String?, for id: String) {
+        guard !id.isEmpty else { return }
+        let trimmed = (name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { nicknames.removeValue(forKey: id) }
+        else { nicknames[id] = trimmed }
+    }
+
     // Nudge step, user-configurable (persisted). Clamped to a sane physical
     // range via setNudgeCm(_:) rather than by re-assigning nudgeCm from its
     // own didSet — the popover's TextField binds directly to $nudgeCm, and a
@@ -78,6 +101,28 @@ final class DeskController: NSObject, ObservableObject {
 
     func setNudgeCm(_ value: Double) {
         nudgeCm = min(max(value, 0.5), 20.0)
+    }
+
+    // Calibration: the desk's absolute height at its lowest position. The BLE
+    // characteristic only reports offset-above-minimum, so this baseline decides
+    // what "cm" the readout — and move-to targets — are measured against.
+    // Defaults to 68; override it in the popover if your desk (or its panel's
+    // configured display offset) reads differently. Persisted; deliberately not
+    // clamped in didSet (the popover's TextField binds directly to $minCm and a
+    // re-entrant clamp fights live typing) — clamp on commit via setMinCm(_:).
+    @Published var minCm: Double { didSet { UserDefaults.standard.set(minCm, forKey: "minCm") } }
+
+    /// Usable maximum height = calibrated minimum + fixed travel span.
+    var maxCm: Double { minCm + kTravelCm }
+
+    // Most recent raw height sample (0.1 mm units above the minimum). Retained
+    // so recalibrating minCm can refresh the readout immediately rather than
+    // waiting for the next BLE notification (the desk is silent when idle).
+    private var lastRawHeight: UInt16 = 0
+
+    func setMinCm(_ value: Double) {
+        minCm = min(max(value, 40.0), 100.0)
+        if isReady { heightCm = Double(lastRawHeight) / 100.0 + minCm }
     }
 
     private var central: CBCentralManager!
@@ -105,6 +150,8 @@ final class DeskController: NSObject, ObservableObject {
         sitCm = d.object(forKey: "sitCm") as? Double ?? 74.0
         standCm = d.object(forKey: "standCm") as? Double ?? 110.0
         nudgeCm = d.object(forKey: "nudgeCm") as? Double ?? 2.0
+        minCm = d.object(forKey: "minCm") as? Double ?? 68.0
+        nicknames = (d.dictionary(forKey: "deskNicknames") as? [String: String]) ?? [:]
         super.init()
         central = CBCentralManager(delegate: self, queue: .main)
     }
@@ -172,7 +219,7 @@ final class DeskController: NSObject, ObservableObject {
 
     func moveTo(cm: Double) {
         guard isReady, let p = peripheral else { return }
-        let target = min(max(cm, kMinCm + 0.5), kMaxCm - 0.5)
+        let target = min(max(cm, minCm + 0.5), maxCm - 0.5)
         targetCm = target
         isMoving = true
         lastMoveReachedTarget = false   // set true only if we actually arrive
@@ -235,7 +282,7 @@ final class DeskController: NSObject, ObservableObject {
     // MARK: - Encoding
 
     private func encodeTargetCm(_ cm: Double) -> Data {
-        let raw = Int(((cm - kMinCm) / 100.0 * 10000.0).rounded())
+        let raw = Int(((cm - minCm) / 100.0 * 10000.0).rounded())
         let clamped = UInt16(min(max(raw, 0), 65535))
         return Data([UInt8(clamped & 0xFF), UInt8(clamped >> 8)])
     }
@@ -243,7 +290,8 @@ final class DeskController: NSObject, ObservableObject {
     private func decodeHeightSpeed(_ data: Data) {
         guard data.count >= 2 else { return }
         let rawH = UInt16(data[0]) | (UInt16(data[1]) << 8)
-        heightCm = Double(rawH) / 100.0 + kMinCm
+        lastRawHeight = rawH
+        heightCm = Double(rawH) / 100.0 + minCm
         if data.count >= 4 {
             let rawS = UInt16(data[2]) | (UInt16(data[3]) << 8)
             speed = Int(Int16(bitPattern: rawS))
@@ -307,11 +355,10 @@ extension DeskController: CBCentralManagerDelegate {
                 self.discoveredPeripherals[peripheral.identifier] = peripheral
                 let entry = DiscoveredDesk(id: peripheral.identifier, name: deskName, rssi: RSSI.intValue)
                 if let idx = self.discovered.firstIndex(where: { $0.id == entry.id }) {
-                    self.discovered[idx] = entry
+                    self.discovered[idx] = entry   // refresh RSSI in place; ordering is the view's job
                 } else {
                     self.discovered.append(entry)
                 }
-                self.discovered.sort { $0.rssi > $1.rssi }
                 return
             }
             central.stopScan()

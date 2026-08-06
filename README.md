@@ -23,7 +23,17 @@ controller (a desk advertising as `DESK ####`).
   | `⌃⌥⇧↑` / `⌃⌥⇧↓` | Nudge ±2 cm |
   | `⌃⌥Space` | Stop |
 - 📏 **Live height** shown right in the menu bar.
+- ✏️ **Editable height** — click the readout, type an exact target (e.g. `100.1`), and press
+  Return to move straight there.
+- 🎚️ **Calibratable minimum** — set your desk's lowest height (default 68 cm) so the readout
+  matches the physical panel.
+- ⏰ **Posture reminders & tracking** — see today's sit/stand split and get nudged to switch on
+  your own interval (optionally auto-switching the desk).
+- 🎯 **Daily standing goal & 7-day history** — set a target and watch your standing trend at a
+  glance, with a goal line on the chart.
 - 🔀 **Desk switcher** — scan and pick between multiple desks by Bluetooth signal strength.
+- 🏷️ **Nameable desks** — assign a local nickname to each desk; the switcher shows the number
+  *and* your name (the advertised Bluetooth name is left untouched).
 - 🔌 **Auto-connect & auto-reconnect** to your last desk on launch.
 - 🤖 **AI control (MCP)** — drive the desk from Claude or any MCP client in natural language.
 - 🐍 **Python prototype** for discovery, debugging, and scripting.
@@ -146,14 +156,16 @@ handshake.** The working sequence is:
    Encoding: `raw = round((metres − 0.62) × 10000)` as little-endian `uint16`.
 4. **Stop:** `ff 00` to the command char, `01 80` to reference input.
 
-Height decode from `99fa0021`: little-endian, `cm = raw / 100 + 62.0` (range 62–127 cm).
+Height decode from `99fa0021`: little-endian, `cm = raw / 100 + base`, where `base` is the
+desk's mechanical minimum (configurable in the app; default 68 cm). The raw value is the
+offset above that minimum, so `base` sets the absolute reading — calibrate it to match your
+physical panel.
 
 ## Roadmap / ideas
 
 - Launch at login (`SMAppService`).
-- User-customisable shortcuts in the UI.
 - App icon + notarised release build.
-- Sit/stand reminders.
+- Standing-time export (CSV) & weekly summary.
 
 Contributions welcome — issues and PRs appreciated, especially test reports from other LINAK
 controller variants.

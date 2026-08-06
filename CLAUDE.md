@@ -97,7 +97,8 @@ was the single biggest gotcha. Characteristics share the base
 
 Move sequence: **(1)** DPG handshake — `7f 86 00` then `7f 86 80 01…11` to `99fa0011`, then
 `FE 00` to command; **(2)** prime with `FE 00` + `FF 00`; **(3)** spam the target to `99fa0031`
-(~every 0.1 s) until reached. Height: little-endian, `cm = raw/100 + 62.0` (range ~62–127 cm).
+(~every 0.1 s) until reached. Height: little-endian, `cm = raw/100 + base`, where `base` is the
+desk's mechanical minimum — user-calibratable in the app (default 68 cm; see `DeskController.minCm`).
 The Swift app reimplements this in `DeskController.swift`; the Python `prototype/` gets it from
 `idasen`. (The MCP server no longer does BLE — it relays to the app; see below.)
 

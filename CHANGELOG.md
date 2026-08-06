@@ -5,6 +5,41 @@ All notable changes to DeskBar are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+- The connected desk's raw CoreBluetooth UUID no longer clutters the popover — the name/nickname
+  identifies the desk, and the UUID was only ever there for troubleshooting.
+
+### Added
+- **Editable height readout.** Click the large height in the popover, type a target
+  (e.g. `100.1`), and press Return to drive the desk straight to that height. Tolerates a
+  `cm` suffix and a decimal comma; the value is clamped to the desk's physical range. The
+  readout keeps tracking the live height even while focused, and only freezes once you type a
+  different value, so a moving desk stays current but your keystrokes aren't overwritten; it
+  reverts to the live height if you blur without pressing Return.
+- **Nameable desks.** Give each desk a local nickname (e.g. "My desk") from the Desk section
+  once connected — saved locally against the desk's Bluetooth id, never touching the advertised
+  name. Named desks are grouped in a **Saved** section at the top of the switcher (showing your
+  name and the `DESK ####` number), and the list no longer reshuffles as the Bluetooth signal
+  fluctuates — it's sorted by name, with signal strength still shown per row.
+- **Standing-time history & daily goal.** Set a daily standing goal (default 2 h); the popover
+  shows today's standing *and* sitting totals (with a checkmark once you hit the goal) and a
+  7-day stacked bar chart — standing in green, sitting in cyan — with a goal line, today
+  highlighted. Both standing and sitting are archived per day (last 30 days kept).
+- **Posture reminders + standing-time tracking.** DeskBar tracks how long you've spent sitting
+  vs. standing today — shown in the popover as a split bar and totals — and can nudge you to
+  switch on an interval you choose (default 45 min). Reminders arrive as a macOS notification
+  with a **Switch now** button, or can move the desk for you (**Auto-switch**). A live
+  countdown to the next switch is shown while reminders are on. Tracking and reminders pause
+  while the desk is disconnected, the screen is locked, or you've been idle >10 min, so an
+  empty desk is neither counted nor nagged; totals reset daily.
+- **Calibratable minimum height.** The readout turns the desk's raw Bluetooth value into cm
+  by adding the desk's mechanical minimum, which was hardcoded and assumed to be 62 cm. It
+  now defaults to **68 cm** and is editable in the popover ("Min height"), so the reading
+  matches your physical panel. The usable maximum tracks it (minimum + a fixed 65 cm travel),
+  and changing it refreshes the readout immediately.
+
 ## [1.3.0] - 2026-08-06
 
 ### Added
@@ -82,6 +117,7 @@ fix, the shortcut editor, and the UI improvements ([#1](https://github.com/pedro
 - Multi-desk switcher by Bluetooth signal strength, with auto-connect and auto-reconnect.
 - Python/`bleak` prototype and the documented DPG1C wakeup handshake.
 
+[Unreleased]: https://github.com/pedrocorreia/DeskBar/compare/v1.2.0...HEAD
 [1.2.0]: https://github.com/pedrocorreia/DeskBar/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/pedrocorreia/DeskBar/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/pedrocorreia/DeskBar/releases/tag/v1.0.0
