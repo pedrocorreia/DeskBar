@@ -1,156 +1,166 @@
 #!/usr/bin/env python3
 """
 DeskBar MCP server — lets an AI assistant (Claude Desktop, Claude Code, or any
-MCP client) drive a LINAK DPG1C standing desk over Bluetooth.
+MCP client) drive a LINAK DPG1C standing desk.
 
-It reuses the same `idasen` control path proven in prototype/ (including the DPG
-wakeup handshake), and reads the Sit/Stand/nudge presets straight from the
-DeskBar macOS app's preferences so the two stay in sync.
+It does NOT talk Bluetooth itself. macOS attributes a CoreBluetooth request to
+the *responsible* process, and when this server is spawned by the `claude` CLI
+that CLI has no Bluetooth usage-description string — so TCC hard-aborts the
+process (SIGABRT) the instant it touches BLE. Instead, this server sends
+commands over a Unix-domain socket to the DeskBar macOS app, which is a properly
+signed bundle that owns the Bluetooth permission and holds the live connection.
 
-Run (stdio):
+Start the DeskBar app first (it opens the control socket on launch). Run (stdio):
     ./.venv/bin/python mcp/desk_mcp.py
-
-Config: set DESK_ADDRESS to your desk's CoreBluetooth UUID (from `desk.py scan`);
-otherwise it falls back to the project's known desk.
 """
 import asyncio
+import json
 import os
-import subprocess
 
-from bleak import BleakScanner
-from idasen import IdasenDesk
 from mcp.server.mcpserver import MCPServer
 
-# Desk address (macOS CoreBluetooth UUID, not a MAC). Override with DESK_ADDRESS.
-DESK_ADDRESS = os.environ.get("DESK_ADDRESS", "A6EB36A7-8AB4-E267-D74C-B9E8D1EC8195")
+# Must match ControlServer.socketPath in the DeskBar app.
+SOCKET_PATH = os.path.expanduser("~/Library/Application Support/DeskBar/control.sock")
 
-MIN_CM = 62.0
-MAX_CM = 127.0
-PREFS_DOMAIN = "com.pedro.deskbar"  # DeskBar app's UserDefaults domain
+# Movements block until the desk arrives; the app caps a move at ~45s, so give
+# the socket read a bit more headroom than that.
+REQUEST_TIMEOUT = 60.0
 
 server = MCPServer(
     name="deskbar",
-    version="1.2.0",
+    version="2.0.0",
     instructions=(
-        "Controls a LINAK standing desk over Bluetooth. Use `get_status` to read the "
-        "current height and presets, `stand`/`sit` for the saved presets, `set_height` "
-        "for an absolute height in cm, and `nudge` for a relative move. Heights are in "
-        "centimetres, roughly 62–127. Movement tools block until the desk arrives."
+        "Controls a LINAK standing desk via the DeskBar macOS app. Use `get_status` "
+        "to read the current height and presets, `stand`/`sit` for the saved presets, "
+        "`set_height` for an absolute height in cm, `nudge` for a relative move, and "
+        "`stop` to cancel a move in progress. "
+        "Heights are in centimetres, roughly 62–127. Movement tools block until the "
+        "desk arrives. If calls report the app isn't reachable, launch DeskBar.app."
     ),
 )
 
 
-def _read_pref(key: str, default: float) -> float:
-    """Read a Double from the DeskBar app's preferences; fall back if unset."""
+_APP_DOWN = {"ok": False, "error": (
+    "The DeskBar app isn't running (control socket not reachable). "
+    "Launch DeskBar.app, then try again."
+)}
+
+
+async def _request(payload: dict, timeout: float = REQUEST_TIMEOUT) -> dict:
+    """Send one JSON command to the DeskBar app and return its JSON reply.
+
+    Uses asyncio streams throughout so a long move (the app blocks the reply
+    until the desk arrives, up to ~45s) never blocks the event loop — other
+    tool calls, cancellation, and transport I/O keep flowing.
+    """
     try:
-        r = subprocess.run(
-            ["defaults", "read", PREFS_DOMAIN, key],
-            capture_output=True, text=True, timeout=3,
-        )
-        if r.returncode == 0 and r.stdout.strip():
-            return float(r.stdout.strip())
-    except (ValueError, subprocess.SubprocessError):
-        pass
-    return default
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_unix_connection(SOCKET_PATH), timeout=5.0)
+    except (FileNotFoundError, ConnectionRefusedError):
+        return dict(_APP_DOWN)
+    except (asyncio.TimeoutError, OSError) as e:
+        return {"ok": False, "error": (
+            f"Couldn't reach the DeskBar app ({type(e).__name__}: {e}). Is it running?"
+        )}
+
+    try:
+        writer.write((json.dumps(payload) + "\n").encode())
+        await writer.drain()
+        line = await asyncio.wait_for(reader.readline(), timeout=timeout)
+    except (asyncio.TimeoutError, OSError) as e:
+        return {"ok": False, "error": (
+            f"Lost contact with the DeskBar app ({type(e).__name__}: {e})."
+        )}
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except OSError:
+            pass
+
+    try:
+        return json.loads(line.decode())
+    except (json.JSONDecodeError, ValueError) as e:
+        return {"ok": False, "error": f"Unexpected reply from the DeskBar app ({e})."}
 
 
-def _presets() -> tuple[float, float, float]:
+def _presets(r: dict) -> str:
     return (
-        _read_pref("sitCm", 74.0),
-        _read_pref("standCm", 110.0),
-        _read_pref("nudgeCm", 2.0),
+        f"Presets — sit {r.get('sit_cm', 0):.0f} cm, "
+        f"stand {r.get('stand_cm', 0):.0f} cm, "
+        f"nudge step {r.get('nudge_cm', 0):g} cm."
     )
 
 
-def _clamp(cm: float) -> float:
-    return max(MIN_CM + 0.5, min(MAX_CM - 0.5, cm))
+def _describe(r: dict) -> str:
+    """Human-readable line for a status/move reply."""
+    if not r.get("ok"):
+        return r.get("error", "Something went wrong talking to the DeskBar app.")
+    if not r.get("ready"):
+        return ("DeskBar is running but hasn't connected to the desk yet "
+                "(finding it over Bluetooth). " + _presets(r))
+    return (f"Desk is at {r.get('height_cm', 0):.1f} cm "
+            f"({r.get('posture', 'unknown')}). " + _presets(r))
 
 
-def _posture(cm: float, sit: float, stand: float) -> str:
-    return "standing" if cm >= (sit + stand) / 2 else "sitting"
-
-
-async def _current_height_cm(desk: IdasenDesk) -> float:
-    return await desk.get_height() * 100.0
-
-
-async def _move_to(cm: float) -> str:
-    target = _clamp(cm)
-    sit, stand, _ = _presets()
-    try:
-        async with IdasenDesk(mac=DESK_ADDRESS) as desk:
-            await desk.wakeup()  # DPG1C ignores movement without this handshake
-            await desk.move_to_target(target / 100.0)
-            now = await _current_height_cm(desk)
-        return f"Moved the desk to {now:.1f} cm ({_posture(now, sit, stand)})."
-    except Exception as e:  # noqa: BLE001 - surface a helpful message to the assistant
-        return (
-            f"Couldn't move the desk ({type(e).__name__}: {e}). "
-            "Is it in Bluetooth range and awake? Tapping its physical controller wakes it."
-        )
+def _moved(r: dict) -> str:
+    if not r.get("ok"):
+        return r.get("error", "Couldn't move the desk.")
+    return f"Moved the desk to {r.get('height_cm', 0):.1f} cm ({r.get('posture', 'unknown')})."
 
 
 @server.tool()
 async def get_status() -> str:
     """Report the desk's current height, posture, and saved presets."""
-    sit, stand, nudge = _presets()
-    try:
-        async with IdasenDesk(mac=DESK_ADDRESS) as desk:
-            cm = await _current_height_cm(desk)
-        return (
-            f"Desk is at {cm:.1f} cm ({_posture(cm, sit, stand)}). "
-            f"Presets — sit {sit:.0f} cm, stand {stand:.0f} cm, nudge step {nudge:g} cm."
-        )
-    except Exception as e:  # noqa: BLE001
-        return (
-            f"Couldn't reach the desk ({type(e).__name__}: {e}). "
-            f"Presets on file — sit {sit:.0f} cm, stand {stand:.0f} cm."
-        )
+    return _describe(await _request({"cmd": "status"}))
 
 
 @server.tool()
 async def stand() -> str:
     """Raise the desk to the saved Stand preset height."""
-    _, stand_cm, _ = _presets()
-    return await _move_to(stand_cm)
+    return _moved(await _request({"cmd": "stand"}))
 
 
 @server.tool()
 async def sit() -> str:
     """Lower the desk to the saved Sit preset height."""
-    sit_cm, _, _ = _presets()
-    return await _move_to(sit_cm)
+    return _moved(await _request({"cmd": "sit"}))
 
 
 @server.tool()
 async def set_height(height_cm: float) -> str:
     """Move the desk to an absolute height in centimetres (clamped to ~62–127)."""
-    return await _move_to(height_cm)
+    return _moved(await _request({"cmd": "set_height", "height_cm": height_cm}))
 
 
 @server.tool()
 async def nudge(delta_cm: float) -> str:
     """Move the desk up (positive) or down (negative) by a relative amount in cm."""
-    try:
-        async with IdasenDesk(mac=DESK_ADDRESS) as desk:
-            current = await _current_height_cm(desk)
-    except Exception as e:  # noqa: BLE001
-        return f"Couldn't read the desk to nudge it ({type(e).__name__}: {e})."
-    return await _move_to(current + delta_cm)
+    return _moved(await _request({"cmd": "nudge", "delta_cm": delta_cm}))
+
+
+@server.tool()
+async def stop() -> str:
+    """Immediately stop the desk if it's moving (e.g. to cancel a bad move)."""
+    r = await _request({"cmd": "stop"})
+    if not r.get("ok"):
+        return r.get("error", "Couldn't stop the desk.")
+    return (f"Stopped. Desk is at {r.get('height_cm', 0):.1f} cm "
+            f"({r.get('posture', 'unknown')}).")
 
 
 @server.tool()
 async def list_desks() -> str:
     """Scan for nearby LINAK desks and list them with signal strength."""
-    found = await BleakScanner.discover(timeout=6.0, return_adv=True)
-    rows = []
-    for address, (dev, adv) in found.items():
-        name = dev.name or adv.local_name or ""
-        if "desk" in name.lower() or "linak" in name.lower():
-            rows.append(f"  {name or '(unnamed)'} — {address} (RSSI {adv.rssi})")
-    if not rows:
+    r = await _request({"cmd": "scan"}, timeout=15.0)
+    if not r.get("ok"):
+        return r.get("error", "Couldn't scan for desks.")
+    desks = r.get("desks", [])
+    if not desks:
         return "No desks found. Wake the desk by tapping its controller, then try again."
-    return "Nearby desks (set DESK_ADDRESS to one of these UUIDs):\n" + "\n".join(rows)
+    rows = [f"  {d.get('name') or '(unnamed)'} — {d.get('id')} (RSSI {d.get('rssi')})"
+            for d in desks]
+    return "Nearby desks:\n" + "\n".join(rows)
 
 
 if __name__ == "__main__":

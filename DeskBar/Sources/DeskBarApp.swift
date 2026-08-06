@@ -50,6 +50,10 @@ struct DeskBarApp: App {
 
         HotKeyManager.shared.start()
         HotKeyManager.shared.observe(ShortcutSettings.shared, desk: DeskController.shared)
+
+        // Local control socket so the deskbar MCP server can drive the desk
+        // through this app (which owns the Bluetooth permission) — see ControlServer.
+        ControlServer.shared.start()
     }
 
     private static func terminateIfAlreadyRunning() {

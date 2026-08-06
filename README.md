@@ -34,6 +34,25 @@ DeskBar ships an [MCP](https://modelcontextprotocol.io) server (`mcp/desk_mcp.py
 the desk as tools — `get_status`, `stand`, `sit`, `set_height`, `nudge`, `list_desks` — so an AI
 assistant can move it for you: *"put my desk in standing mode for the next hour."*
 
+**The DeskBar app must be running.** The MCP server does **not** talk Bluetooth itself — it
+relays commands over a local Unix-domain socket
+(`~/Library/Application Support/DeskBar/control.sock`) to the DeskBar app, which owns the
+Bluetooth permission and holds the live desk connection. Launch DeskBar.app first; if it isn't
+running, the tools say so.
+
+<details>
+<summary>Why this indirection (the crash it avoids)</summary>
+
+macOS attributes a CoreBluetooth request to the **responsible process**. When an MCP client
+such as Claude Code spawns the server, that client is the responsible process — and if it has
+no `NSBluetoothAlwaysUsageDescription`, the OS **hard-aborts** the server with `SIGABRT` the
+instant it touches BLE. The client just sees the connection drop (`-32000: Connection closed`).
+Routing all Bluetooth through the signed, Bluetooth-granted app sidesteps this entirely: the
+MCP server never links CoreBluetooth.
+</details>
+
+Setup:
+
 ```bash
 ./.venv/bin/python -m pip install -r mcp/requirements.txt
 
@@ -41,18 +60,26 @@ assistant can move it for you: *"put my desk in standing mode for the next hour.
 claude mcp add deskbar -- /abs/path/.venv/bin/python /abs/path/mcp/desk_mcp.py
 ```
 
-Set `DESK_ADDRESS` to your desk's CoreBluetooth UUID (from `desk.py scan`) if it isn't the
-default. The server reads your Sit/Stand presets from the app, so they stay in sync. The MCP
-process needs Bluetooth access on the same Mac as the desk.
+No `DESK_ADDRESS` or Bluetooth setup is needed for the MCP server — the app handles the desk
+(pick it once via **Desk → Switch…**) and stays the single source of truth for your presets.
+
+> **Heads-up:** MCP servers are long-lived — a client loads `desk_mcp.py` once, when it
+> connects. After first registering it (or editing the server), **restart / reconnect the MCP
+> client** so it picks up the current code.
 
 ## Repo layout
 
 ```
 .
 ├── DeskBar/            # The native Swift menu-bar app
-│   ├── Sources/        #   DeskController (BLE), HotKeyManager, SwiftUI views
+│   ├── Sources/        #   DeskController (BLE), ControlServer (MCP socket),
+│   │                   #   HotKeyManager, SwiftUI views
 │   ├── Info.plist
 │   └── build.sh        #   builds DeskBar.app with swiftc (no full Xcode needed)
+├── mcp/                # MCP server exposing the desk as AI tools
+│   ├── desk_mcp.py     #   talks to the app's control socket (no Bluetooth here)
+│   ├── test_client.py  #   spawns the server over stdio and calls a tool
+│   └── requirements.txt
 └── prototype/          # Python tools used to crack the protocol
     ├── desk.py         #   scan / info / monitor / up / down / to / diag
     ├── test_idasen.py  #   minimal move test via the `idasen` library

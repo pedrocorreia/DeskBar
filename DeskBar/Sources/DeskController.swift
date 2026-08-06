@@ -52,6 +52,12 @@ final class DeskController: NSObject, ObservableObject {
     @Published var isMoving = false
     @Published var deskName = ""
 
+    // Whether the last movement actually arrived at its target (vs. stalled,
+    // hit a travel limit, or was stopped). Read by ControlServer.move() so the
+    // MCP client isn't told a short/interrupted move succeeded. Set false when a
+    // move starts, true only when finishMove(reached: true) fires.
+    private(set) var lastMoveReachedTarget = true
+
     // Desk-picker ("pairing") state
     @Published var isPairing = false
     @Published var discovered: [DiscoveredDesk] = []
@@ -121,10 +127,13 @@ final class DeskController: NSObject, ObservableObject {
 
     /// Start scanning and collecting nearby desks instead of auto-connecting.
     func beginPairing() {
-        guard central.state == .poweredOn else { return }
-        isPairing = true
+        // Clear first, before the power-state guard — otherwise a scan attempted
+        // while Bluetooth is off leaves the previous session's results in place,
+        // and callers (e.g. ControlServer.scan) report them as freshly found.
         discovered = []
         discoveredPeripherals = [:]
+        guard central.state == .poweredOn else { return }
+        isPairing = true
         central.stopScan()
         central.scanForPeripherals(withServices: nil)   // catch non-advertising units too
         statusText = "Searching for desks…"
@@ -166,6 +175,7 @@ final class DeskController: NSObject, ObservableObject {
         let target = min(max(cm, kMinCm + 0.5), kMaxCm - 0.5)
         targetCm = target
         isMoving = true
+        lastMoveReachedTarget = false   // set true only if we actually arrive
         statusText = String(format: "Moving to %.0f cm…", target)
 
         // 1) DPG handshake, 2) prime with wakeup+stop.
@@ -217,6 +227,7 @@ final class DeskController: NSObject, ObservableObject {
     }
 
     private func finishMove(reached: Bool) {
+        lastMoveReachedTarget = reached
         stop()
         statusText = reached ? "Connected" : "Stopped"
     }
