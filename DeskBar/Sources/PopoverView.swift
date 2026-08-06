@@ -44,29 +44,30 @@ struct PopoverView: View {
 
     private var presetButtons: some View {
         HStack(spacing: 10) {
-            Button(action: desk.goSit) {
-                presetLabel(title: "Sit", cm: desk.sitCm, symbol: "chair.lounge")
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.blue)
-
-            Button(action: desk.goStand) {
-                presetLabel(title: "Stand", cm: desk.standCm, symbol: "figure.stand")
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.green)
+            presetButton(title: "Sit", cm: desk.sitCm, symbol: "chair.lounge",
+                         fill: .cyan, action: desk.goSit)
+            presetButton(title: "Stand", cm: desk.standCm, symbol: "figure.stand",
+                         fill: .green, action: desk.goStand)
         }
         .disabled(!desk.isReady)
     }
 
-    private func presetLabel(title: String, cm: Double, symbol: String) -> some View {
-        VStack(spacing: 3) {
-            Image(systemName: symbol).font(.title3)
-            Text(title).font(.headline)
-            Text("\(Int(cm)) cm").font(.caption2).opacity(0.85)
+    private func presetButton(title: String, cm: Double, symbol: String,
+                              fill: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: symbol).font(.title3)
+                Text(title).font(.headline)
+                Text("\(Int(cm)) cm").font(.caption2).opacity(0.9)
+            }
+            // Dark text/icon for legibility on the bright fill.
+            .foregroundStyle(.black)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .background(fill, in: RoundedRectangle(cornerRadius: 8))
+            .opacity(desk.isReady ? 1 : 0.5)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
+        .buttonStyle(.plain)
     }
 
     private var nudgeRow: some View {
