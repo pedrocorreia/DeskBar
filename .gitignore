@@ -1,0 +1,18 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Swift / app build output
+DeskBar/DeskBar.app/
+*.o
+*.swiftmodule
+*.swiftdoc
+
+# Local editor / tooling settings
+.claude/
+.vscode/
+.idea/
