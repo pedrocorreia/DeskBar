@@ -204,6 +204,14 @@ struct PopoverView: View {
             shortcutRow("\(shortcuts.nudgeUp.displayString) / \(shortcuts.nudgeDown.displayString)", "Nudge ±\(nudgeLabel)")
             shortcutRow(shortcuts.stop.displayString, "Stop")
             Divider().padding(.vertical, 2)
+            Button("About DeskBar…") {
+                openWindow(id: "about")
+                // Accessory (menu-bar-only) apps are never activated automatically,
+                // so the new window would open behind everything and never
+                // become key without this.
+                NSApplication.shared.activate(ignoringOtherApps: true)
+            }
+            .controlSize(.small)
             Button(role: .destructive) { NSApplication.shared.terminate(nil) } label: {
                 Label("Quit DeskBar", systemImage: "power").frame(maxWidth: .infinity)
             }
