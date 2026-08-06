@@ -25,6 +25,11 @@ struct DeskBarApp: App {
             ShortcutSettingsView(shortcuts: shortcuts, hotkeys: hotkeys)
         }
         .windowResizability(.contentSize)
+
+        Window("About DeskBar", id: "about") {
+            AboutView()
+        }
+        .windowResizability(.contentSize)
     }
 
     // MenuBarExtra flattens its label into an NSStatusItem button image, which
