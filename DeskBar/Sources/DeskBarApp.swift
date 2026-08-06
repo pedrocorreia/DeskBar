@@ -8,10 +8,11 @@ struct DeskBarApp: App {
     @StateObject private var desk = DeskController.shared
     @StateObject private var hotkeys = HotKeyManager.shared
     @StateObject private var shortcuts = ShortcutSettings.shared
+    @StateObject private var posture = PostureMonitor.shared
 
     var body: some Scene {
         MenuBarExtra {
-            PopoverView(desk: desk, shortcuts: shortcuts)
+            PopoverView(desk: desk, shortcuts: shortcuts, posture: posture)
         } label: {
             // Glanceable height + connection state in the menu bar.
             Image(nsImage: statusIcon)
@@ -50,6 +51,7 @@ struct DeskBarApp: App {
 
         HotKeyManager.shared.start()
         HotKeyManager.shared.observe(ShortcutSettings.shared, desk: DeskController.shared)
+        PostureMonitor.shared.start()
     }
 
     private static func terminateIfAlreadyRunning() {
