@@ -111,7 +111,8 @@ struct PopoverView: View {
             HStack {
                 Text("Nudge amount").font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                TextField("", value: $desk.nudgeCm, format: .number.precision(.fractionLength(0...1)))
+                TextField("", value: Binding(get: { desk.nudgeCm }, set: { desk.setNudgeCm($0) }),
+                          format: .number.precision(.fractionLength(0...1)))
                     .frame(width: 40)
                     .multilineTextAlignment(.trailing)
                     .textFieldStyle(.roundedBorder)

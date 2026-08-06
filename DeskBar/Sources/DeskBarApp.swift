@@ -6,7 +6,7 @@ struct DeskBarApp: App {
     // Backed by shared singletons, not the autoclosure default — see
     // DeskController.shared's comment for why that distinction matters here.
     @StateObject private var desk = DeskController.shared
-    @State private var hotkeys = HotKeyManager.shared
+    @StateObject private var hotkeys = HotKeyManager.shared
     @StateObject private var shortcuts = ShortcutSettings.shared
 
     var body: some Scene {

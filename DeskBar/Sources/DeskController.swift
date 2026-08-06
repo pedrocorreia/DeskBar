@@ -61,13 +61,17 @@ final class DeskController: NSObject, ObservableObject {
     @Published var sitCm: Double  { didSet { UserDefaults.standard.set(sitCm, forKey: "sitCm") } }
     @Published var standCm: Double { didSet { UserDefaults.standard.set(standCm, forKey: "standCm") } }
 
-    // Nudge step, user-configurable (persisted). Clamped to a sane physical range.
+    // Nudge step, user-configurable (persisted). Clamped to a sane physical
+    // range via setNudgeCm(_:) rather than by re-assigning nudgeCm from its
+    // own didSet — the popover's TextField binds directly to $nudgeCm, and a
+    // re-entrant didSet there fights the live typing (clamps mid-keystroke,
+    // can trip SwiftUI's "modifying state during view update" warning).
     @Published var nudgeCm: Double {
-        didSet {
-            let clamped = min(max(nudgeCm, 0.5), 20.0)
-            if clamped != nudgeCm { nudgeCm = clamped }
-            UserDefaults.standard.set(nudgeCm, forKey: "nudgeCm")
-        }
+        didSet { UserDefaults.standard.set(nudgeCm, forKey: "nudgeCm") }
+    }
+
+    func setNudgeCm(_ value: Double) {
+        nudgeCm = min(max(value, 0.5), 20.0)
     }
 
     private var central: CBCentralManager!
@@ -352,6 +356,12 @@ extension DeskController: CBCentralManagerDelegate {
     nonisolated func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral,
                                     error: Error?) {
         Task { @MainActor in
+            // The timer armed by the failed connect attempt is now moot — if
+            // connectKnownOrScan() below takes the scan branch (not the
+            // known-peripheral branch), nothing else invalidates it, and it
+            // can fire later and redundantly cancel/restart an active scan.
+            self.connectTimeoutTimer?.invalidate()
+            self.connectTimeoutTimer = nil
             self.statusText = "Connection failed — retrying…"
             self.connectKnownOrScan()
         }

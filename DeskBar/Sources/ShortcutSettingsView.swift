@@ -5,6 +5,13 @@ import Carbon.HIToolbox
 struct ShortcutSettingsView: View {
     @ObservedObject var shortcuts: ShortcutSettings
     @ObservedObject var hotkeys: HotKeyManager
+    @Environment(\.scenePhase) private var scenePhase
+
+    /// Which action's field currently owns the recording monitor, if any.
+    /// Centralized here (rather than per-field @State) so arming one field
+    /// deterministically disarms any other — otherwise two overlapping local
+    /// monitors could both fire on the next keypress.
+    @State private var activeRecorder: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -31,6 +38,14 @@ struct ShortcutSettingsView: View {
         }
         .padding(20)
         .frame(width: 340)
+        .onChange(of: scenePhase) { phase in
+            // Recording suspends every global hotkey (see ShortcutRecorderField).
+            // If the user arms a field then switches to another app instead of
+            // pressing a combo, that suspension would otherwise never lift.
+            guard phase != .active, activeRecorder != nil else { return }
+            activeRecorder = nil
+            hotkeys.resume()
+        }
     }
 
     private var allBindings: [(key: String, title: String, combo: KeyCombo)] {
@@ -55,9 +70,13 @@ struct ShortcutSettingsView: View {
             Text(title)
                 .foregroundStyle(hotkeys.failedActions.contains(actionKey) ? .red : .primary)
             Spacer()
-            ShortcutRecorderField(combo: combo, hotkeys: hotkeys) { newCombo in
-                conflict(for: newCombo, excluding: actionKey)
-            }
+            ShortcutRecorderField(
+                combo: combo,
+                hotkeys: hotkeys,
+                actionKey: actionKey,
+                activeRecorder: $activeRecorder,
+                conflictCheck: { newCombo in conflict(for: newCombo, excluding: actionKey) }
+            )
         }
     }
 }
@@ -69,12 +88,15 @@ struct ShortcutSettingsView: View {
 struct ShortcutRecorderField: View {
     @Binding var combo: KeyCombo
     @ObservedObject var hotkeys: HotKeyManager
+    let actionKey: String
+    @Binding var activeRecorder: String?
     /// Returns the title of whichever other action already owns a combo, or nil.
     var conflictCheck: (KeyCombo) -> String?
 
-    @State private var isRecording = false
     @State private var monitor: Any?
     @State private var conflictMessage: String?
+
+    private var isRecording: Bool { activeRecorder == actionKey }
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 2) {
@@ -84,13 +106,22 @@ struct ShortcutRecorderField: View {
             .buttonStyle(.bordered)
             .tint(isRecording ? .orange : nil)
             .frame(width: 120)
-            .onDisappear { stopRecording() }
+            .onDisappear { if monitor != nil { stopRecording() } }
 
             if let conflictMessage {
                 Text(conflictMessage)
                     .font(.caption2).foregroundStyle(.red)
                     .frame(width: 120)
             }
+        }
+        .onChange(of: activeRecorder) { newValue in
+            // Another field armed itself — tear down our own monitor, but
+            // don't touch global hotkey suspension: it's the new field's to
+            // manage now, and it already re-suspended when it armed.
+            guard newValue != actionKey, monitor != nil else { return }
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            conflictMessage = nil
         }
     }
 
@@ -99,7 +130,7 @@ struct ShortcutRecorderField: View {
         // local monitor would ever see them — most obviously when re-recording
         // the very combo that's currently bound. Drop all bindings while armed.
         hotkeys.suspend()
-        isRecording = true
+        activeRecorder = actionKey
         conflictMessage = nil
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
             let mods = carbonModifiers(from: event.modifierFlags)
@@ -118,9 +149,9 @@ struct ShortcutRecorderField: View {
     }
 
     private func stopRecording() {
-        isRecording = false
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
+        if activeRecorder == actionKey { activeRecorder = nil }
         hotkeys.resume()
     }
 

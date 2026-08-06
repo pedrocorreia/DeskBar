@@ -29,23 +29,33 @@ struct KeyCombo: Codable, Equatable, Hashable {
         case kVK_Tab: return "Tab"
         case kVK_Delete: return "Delete"
         default:
-            // Letters/digits map cleanly via the ASCII-adjacent Carbon keycodes
-            // for the common case; anything exotic just shows the raw code.
-            if let scalar = Self.asciiForKeyCode[code] { return String(scalar) }
-            return "Key\(code)"
+            // kVK_ANSI_* names the *physical* key position, not what it types —
+            // wrong label (though registration is unaffected) on non-QWERTY
+            // layouts. Ask the actual current layout what it produces there.
+            return Self.layoutCharacter(for: code) ?? "Key\(code)"
         }
     }
 
-    private static let asciiForKeyCode: [Int: Character] = [
-        kVK_ANSI_A: "A", kVK_ANSI_B: "B", kVK_ANSI_C: "C", kVK_ANSI_D: "D", kVK_ANSI_E: "E",
-        kVK_ANSI_F: "F", kVK_ANSI_G: "G", kVK_ANSI_H: "H", kVK_ANSI_I: "I", kVK_ANSI_J: "J",
-        kVK_ANSI_K: "K", kVK_ANSI_L: "L", kVK_ANSI_M: "M", kVK_ANSI_N: "N", kVK_ANSI_O: "O",
-        kVK_ANSI_P: "P", kVK_ANSI_Q: "Q", kVK_ANSI_R: "R", kVK_ANSI_S: "S", kVK_ANSI_T: "T",
-        kVK_ANSI_U: "U", kVK_ANSI_V: "V", kVK_ANSI_W: "W", kVK_ANSI_X: "X", kVK_ANSI_Y: "Y",
-        kVK_ANSI_Z: "Z",
-        kVK_ANSI_0: "0", kVK_ANSI_1: "1", kVK_ANSI_2: "2", kVK_ANSI_3: "3", kVK_ANSI_4: "4",
-        kVK_ANSI_5: "5", kVK_ANSI_6: "6", kVK_ANSI_7: "7", kVK_ANSI_8: "8", kVK_ANSI_9: "9",
-    ]
+    private static func layoutCharacter(for keyCode: Int) -> String? {
+        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let dataPtr = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else {
+            return nil
+        }
+        let layoutData = unsafeBitCast(dataPtr, to: CFData.self) as Data
+        return layoutData.withUnsafeBytes { buffer -> String? in
+            guard let layout = buffer.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self) else {
+                return nil
+            }
+            var deadKeyState: UInt32 = 0
+            var chars = [UniChar](repeating: 0, count: 4)
+            var length = 0
+            let status = UCKeyTranslate(layout, UInt16(keyCode), UInt16(kUCKeyActionDisplay),
+                                        0, UInt32(LMGetKbdType()), UInt32(kUCKeyTranslateNoDeadKeysBit),
+                                        &deadKeyState, chars.count, &length, &chars)
+            guard status == noErr, length > 0 else { return nil }
+            return String(utf16CodeUnits: chars, count: length).uppercased()
+        }
+    }
 }
 
 /// User-configurable bindings for the five desk actions. Defaults match the
@@ -62,33 +72,54 @@ final class ShortcutSettings: ObservableObject {
     @Published var stop: KeyCombo      { didSet { persist() } }
 
     private static let defaultsKey = "shortcutBindings"
+    // Suppresses persist() during a batch update (resetToDefaults) so five
+    // property assignments produce one UserDefaults write instead of five.
+    private var isApplyingBatch = false
 
-    init() {
+    private struct Defaults {
+        let stand, sit, nudgeUp, nudgeDown, stop: KeyCombo
+    }
+
+    private static func defaultBindings() -> Defaults {
         let base = UInt32(controlKey) | UInt32(optionKey)
         let withShift = base | UInt32(shiftKey)
+        return Defaults(
+            stand: KeyCombo(keyCode: kVK_UpArrow, modifiers: base),
+            sit: KeyCombo(keyCode: kVK_DownArrow, modifiers: base),
+            nudgeUp: KeyCombo(keyCode: kVK_UpArrow, modifiers: withShift),
+            nudgeDown: KeyCombo(keyCode: kVK_DownArrow, modifiers: withShift),
+            stop: KeyCombo(keyCode: kVK_Space, modifiers: base)
+        )
+    }
+
+    init() {
+        let defaults = Self.defaultBindings()
         var loaded: [String: KeyCombo] = [:]
         if let data = UserDefaults.standard.data(forKey: Self.defaultsKey),
            let decoded = try? JSONDecoder().decode([String: KeyCombo].self, from: data) {
             loaded = decoded
         }
-        stand     = loaded["stand"]     ?? KeyCombo(keyCode: kVK_UpArrow,   modifiers: base)
-        sit       = loaded["sit"]       ?? KeyCombo(keyCode: kVK_DownArrow, modifiers: base)
-        nudgeUp   = loaded["nudgeUp"]   ?? KeyCombo(keyCode: kVK_UpArrow,   modifiers: withShift)
-        nudgeDown = loaded["nudgeDown"] ?? KeyCombo(keyCode: kVK_DownArrow, modifiers: withShift)
-        stop      = loaded["stop"]      ?? KeyCombo(keyCode: kVK_Space,    modifiers: base)
+        stand     = loaded["stand"]     ?? defaults.stand
+        sit       = loaded["sit"]       ?? defaults.sit
+        nudgeUp   = loaded["nudgeUp"]   ?? defaults.nudgeUp
+        nudgeDown = loaded["nudgeDown"] ?? defaults.nudgeDown
+        stop      = loaded["stop"]      ?? defaults.stop
     }
 
     func resetToDefaults() {
-        let base = UInt32(controlKey) | UInt32(optionKey)
-        let withShift = base | UInt32(shiftKey)
-        stand = KeyCombo(keyCode: kVK_UpArrow, modifiers: base)
-        sit = KeyCombo(keyCode: kVK_DownArrow, modifiers: base)
-        nudgeUp = KeyCombo(keyCode: kVK_UpArrow, modifiers: withShift)
-        nudgeDown = KeyCombo(keyCode: kVK_DownArrow, modifiers: withShift)
-        stop = KeyCombo(keyCode: kVK_Space, modifiers: base)
+        let defaults = Self.defaultBindings()
+        isApplyingBatch = true
+        stand = defaults.stand
+        sit = defaults.sit
+        nudgeUp = defaults.nudgeUp
+        nudgeDown = defaults.nudgeDown
+        stop = defaults.stop
+        isApplyingBatch = false
+        persist()
     }
 
     private func persist() {
+        guard !isApplyingBatch else { return }
         let dict: [String: KeyCombo] = [
             "stand": stand, "sit": sit, "nudgeUp": nudgeUp, "nudgeDown": nudgeDown, "stop": stop,
         ]
