@@ -5,6 +5,15 @@ All notable changes to DeskBar are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Editable height readout.** Click the large height in the popover, type a target
+  (e.g. `100.1`), and press Return to drive the desk straight to that height. Tolerates a
+  `cm` suffix and a decimal comma; the value is clamped to the desk's physical range. While
+  you're editing, the field freezes so incoming BLE height updates don't overwrite your
+  keystrokes; it resyncs to the live height on blur.
+
 ## [1.2.0] - 2026-08-06
 
 ### Added
@@ -60,6 +69,7 @@ fix, the shortcut editor, and the UI improvements ([#1](https://github.com/pedro
 - Multi-desk switcher by Bluetooth signal strength, with auto-connect and auto-reconnect.
 - Python/`bleak` prototype and the documented DPG1C wakeup handshake.
 
+[Unreleased]: https://github.com/pedrocorreia/DeskBar/compare/v1.2.0...HEAD
 [1.2.0]: https://github.com/pedrocorreia/DeskBar/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/pedrocorreia/DeskBar/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/pedrocorreia/DeskBar/releases/tag/v1.0.0

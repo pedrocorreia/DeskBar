@@ -23,6 +23,8 @@ controller (a desk advertising as `DESK ####`).
   | `⌃⌥⇧↑` / `⌃⌥⇧↓` | Nudge ±2 cm |
   | `⌃⌥Space` | Stop |
 - 📏 **Live height** shown right in the menu bar.
+- ✏️ **Editable height** — click the readout, type an exact target (e.g. `100.1`), and press
+  Return to move straight there.
 - 🔀 **Desk switcher** — scan and pick between multiple desks by Bluetooth signal strength.
 - 🔌 **Auto-connect & auto-reconnect** to your last desk on launch.
 - 🐍 **Python prototype** for discovery, debugging, and scripting.

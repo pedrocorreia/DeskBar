@@ -25,9 +25,7 @@ struct PopoverView: View {
     private var header: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(desk.isReady ? String(format: "%.1f cm", desk.heightCm) : "—")
-                    .font(.system(size: 30, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
+                EditableHeight(desk: desk)
                 HStack(spacing: 6) {
                     Circle()
                         .fill(statusColor)
@@ -222,5 +220,57 @@ struct PopoverView: View {
     private var statusColor: Color {
         if desk.isMoving { return .orange }
         return desk.isReady ? .green : .secondary
+    }
+}
+
+/// The big height readout, now editable: type a target height and press Return
+/// to drive the desk there (moveTo(cm:) clamps to the desk's physical range).
+///
+/// It binds to a local buffer rather than $desk.heightCm directly. While the
+/// field isn't focused the buffer mirrors the live height; while you're editing
+/// it freezes, so the stream of incoming BLE height updates doesn't overwrite
+/// your keystrokes mid-typing (same reasoning as the nudge-amount field).
+private struct EditableHeight: View {
+    @ObservedObject var desk: DeskController
+    @State private var text = ""
+    @FocusState private var editing: Bool
+
+    /// Live value shown when not editing. Number-less "—" until connected.
+    private var display: String {
+        desk.isReady ? String(format: "%.1f cm", desk.heightCm) : "—"
+    }
+
+    var body: some View {
+        TextField("", text: $text)
+            .textFieldStyle(.plain)
+            .font(.system(size: 30, weight: .semibold, design: .rounded))
+            .monospacedDigit()
+            .fixedSize()
+            .focused($editing)
+            .disabled(!desk.isReady)
+            .onSubmit(commit)
+            // Single-parameter onChange: the two-parameter form is macOS 14+,
+            // but this app deploys to macOS 13.
+            .onChange(of: display) { newValue in
+                if !editing { text = newValue }
+            }
+            .onChange(of: editing) { isEditing in
+                if !isEditing { text = display }   // discard uncommitted edits on blur
+            }
+            .onAppear { text = display }
+    }
+
+    /// Parse the typed value (tolerating a "cm" suffix, spaces, or a decimal
+    /// comma) and move the desk there. Then resign focus; the onChange above
+    /// resyncs the field to the live height.
+    private func commit() {
+        let cleaned = text
+            .replacingOccurrences(of: "cm", with: "")
+            .replacingOccurrences(of: ",", with: ".")
+            .trimmingCharacters(in: .whitespaces)
+        if let target = Double(cleaned) {
+            desk.moveTo(cm: target)
+        }
+        editing = false
     }
 }
