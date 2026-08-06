@@ -1,5 +1,5 @@
 import Foundation
-import CoreBluetooth
+@preconcurrency import CoreBluetooth
 
 // LINAK DPG1C BLE protocol. See prototype/ and the project memory for how this
 // was reverse-engineered. Char UUIDs all share the …-338a-1024-8a49-009c0215f78a base.
@@ -36,6 +36,14 @@ struct DiscoveredDesk: Identifiable, Equatable {
 
 @MainActor
 final class DeskController: NSObject, ObservableObject {
+    // `_desk.wrappedValue` in DeskBarApp.init() reads a @StateObject before
+    // SwiftUI has installed its storage, which hands back a throwaway instance
+    // from the autoclosure rather than the one the UI actually uses — hotkeys
+    // wired to that throwaway silently read stale state (e.g. nudgeCm frozen
+    // at its launch-time value). Backing the @StateObject with a shared
+    // singleton means "a new instance" always resolves to the same object.
+    static let shared = DeskController()
+
     // Published UI state
     @Published var heightCm: Double = 0
     @Published var speed: Int = 0
@@ -53,6 +61,19 @@ final class DeskController: NSObject, ObservableObject {
     @Published var sitCm: Double  { didSet { UserDefaults.standard.set(sitCm, forKey: "sitCm") } }
     @Published var standCm: Double { didSet { UserDefaults.standard.set(standCm, forKey: "standCm") } }
 
+    // Nudge step, user-configurable (persisted). Clamped to a sane physical
+    // range via setNudgeCm(_:) rather than by re-assigning nudgeCm from its
+    // own didSet — the popover's TextField binds directly to $nudgeCm, and a
+    // re-entrant didSet there fights the live typing (clamps mid-keystroke,
+    // can trip SwiftUI's "modifying state during view update" warning).
+    @Published var nudgeCm: Double {
+        didSet { UserDefaults.standard.set(nudgeCm, forKey: "nudgeCm") }
+    }
+
+    func setNudgeCm(_ value: Double) {
+        nudgeCm = min(max(value, 0.5), 20.0)
+    }
+
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
     private var chars: [CBUUID: CBCharacteristic] = [:]
@@ -64,6 +85,12 @@ final class DeskController: NSObject, ObservableObject {
     private var lastProgressHeight = 0.0
     private var lastProgressTime = Date()
 
+    // CoreBluetooth's connect() has no timeout: if the target peripheral isn't
+    // actually advertising (BLE-asleep, out of range, stale discovery), it hangs
+    // on "Connecting…" forever. This timer promotes any stuck connect attempt to
+    // an active re-scan after a grace period.
+    private var connectTimeoutTimer: Timer?
+
     // Known desk identifier (from the prototype scan). Falls back to scanning.
     private let defaultUUID = "A6EB36A7-8AB4-E267-D74C-B9E8D1EC8195"
 
@@ -71,11 +98,16 @@ final class DeskController: NSObject, ObservableObject {
         let d = UserDefaults.standard
         sitCm = d.object(forKey: "sitCm") as? Double ?? 74.0
         standCm = d.object(forKey: "standCm") as? Double ?? 110.0
+        nudgeCm = d.object(forKey: "nudgeCm") as? Double ?? 2.0
         super.init()
         central = CBCentralManager(delegate: self, queue: .main)
     }
 
     var isStanding: Bool { heightCm >= (sitCm + standCm) / 2 }
+
+    /// CoreBluetooth UUID of the currently connected/selected desk (macOS-specific,
+    /// not the hardware MAC — same identifier `desk.py scan` prints).
+    var deskID: String { peripheral?.identifier.uuidString ?? "" }
 
     // MARK: - Public actions
 
@@ -125,6 +157,7 @@ final class DeskController: NSObject, ObservableObject {
             newP.delegate = self
             statusText = "Connecting…"
             central.connect(newP)
+            scheduleConnectTimeout(for: newP)
         }
     }
 
@@ -223,6 +256,7 @@ final class DeskController: NSObject, ObservableObject {
                 peripheral = p
                 p.delegate = self
                 central.connect(p)
+                scheduleConnectTimeout(for: p)
                 return
             }
         }
@@ -276,11 +310,14 @@ extension DeskController: CBCentralManagerDelegate {
             peripheral.delegate = self
             self.statusText = "Connecting…"
             central.connect(peripheral)
+            self.scheduleConnectTimeout(for: peripheral)
         }
     }
 
     nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         Task { @MainActor in
+            self.connectTimeoutTimer?.invalidate()
+            self.connectTimeoutTimer = nil
             if let n = peripheral.name, !n.isEmpty { self.deskName = n }
             self.statusText = "Discovering…"
             peripheral.discoverServices(nil)
@@ -295,13 +332,36 @@ extension DeskController: CBCentralManagerDelegate {
             self.isReady = false
             self.chars = [:]
             self.statusText = "Disconnected — reconnecting…"
-            self.central.connect(peripheral)   // auto-reconnect
+            self.central.connect(peripheral)   // fast path: works if the desk is already advertising
+            self.scheduleConnectTimeout(for: peripheral)
+        }
+    }
+
+    /// After a grace period, if a connect() call above hasn't landed, cancel it and
+    /// fall back to an active scan. CoreBluetooth's connect() has no built-in
+    /// timeout, so without this a stale/out-of-range/BLE-asleep peripheral leaves
+    /// the UI stuck on "Connecting…" forever.
+    private func scheduleConnectTimeout(for peripheral: CBPeripheral) {
+        connectTimeoutTimer?.invalidate()
+        connectTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 6.0, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.peripheral?.identifier == peripheral.identifier, !self.isReady else { return }
+                self.central.cancelPeripheralConnection(peripheral)
+                self.statusText = "Desk not responding — scanning…"
+                self.connectKnownOrScan()
+            }
         }
     }
 
     nonisolated func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral,
                                     error: Error?) {
         Task { @MainActor in
+            // The timer armed by the failed connect attempt is now moot — if
+            // connectKnownOrScan() below takes the scan branch (not the
+            // known-peripheral branch), nothing else invalidates it, and it
+            // can fire later and redundantly cancel/restart an active scan.
+            self.connectTimeoutTimer?.invalidate()
+            self.connectTimeoutTimer = nil
             self.statusText = "Connection failed — retrying…"
             self.connectKnownOrScan()
         }

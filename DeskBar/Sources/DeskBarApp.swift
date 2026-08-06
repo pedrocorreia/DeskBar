@@ -1,24 +1,46 @@
 import SwiftUI
 import AppKit
-import Carbon.HIToolbox
 
 @main
 struct DeskBarApp: App {
-    @StateObject private var desk = DeskController()
-    @State private var hotkeys = HotKeyManager()
+    // Backed by shared singletons, not the autoclosure default — see
+    // DeskController.shared's comment for why that distinction matters here.
+    @StateObject private var desk = DeskController.shared
+    @StateObject private var hotkeys = HotKeyManager.shared
+    @StateObject private var shortcuts = ShortcutSettings.shared
 
     var body: some Scene {
         MenuBarExtra {
-            PopoverView(desk: desk)
+            PopoverView(desk: desk, shortcuts: shortcuts)
         } label: {
-            // Glanceable height in the menu bar.
-            Image(systemName: desk.isReady ? (desk.isStanding ? "figure.stand" : "chair.lounge")
-                                           : "chair")
+            // Glanceable height + connection state in the menu bar.
+            Image(nsImage: statusIcon)
             if desk.isReady {
                 Text("\(Int(desk.heightCm.rounded()))")
             }
         }
         .menuBarExtraStyle(.window)
+
+        Window("DeskBar Shortcuts", id: "shortcuts") {
+            ShortcutSettingsView(shortcuts: shortcuts, hotkeys: hotkeys)
+        }
+        .windowResizability(.contentSize)
+    }
+
+    // MenuBarExtra flattens its label into an NSStatusItem button image, which
+    // forces template (monochrome, menu-bar-tinted) rendering — SwiftUI color
+    // modifiers (.foregroundStyle, .renderingMode) get discarded in that
+    // conversion. Building a pre-colored NSImage with isTemplate = false is the
+    // only way to keep the color.
+    private var statusIcon: NSImage {
+        let symbolName = desk.isReady ? (desk.isStanding ? "figure.stand" : "chair.lounge") : "chair"
+        let tint: NSColor = desk.isMoving ? .systemOrange : (desk.isReady ? .systemGreen : .systemRed)
+        let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [tint]))
+        let base = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil) ?? NSImage()
+        let img = base.withSymbolConfiguration(config) ?? base
+        img.isTemplate = false
+        return img
     }
 
     init() {
@@ -26,16 +48,8 @@ struct DeskBarApp: App {
         // and exit before creating a second menu-bar item or hotkeys.
         Self.terminateIfAlreadyRunning()
 
-        // Capture the desk instance for the hotkey closures.
-        let deskRef = _desk.wrappedValue
-        let hk = hotkeys
-        let mods = HotKeyManager.control | HotKeyManager.option
-        hk.start()
-        hk.register(key: kVK_UpArrow,   modifiers: mods) { deskRef.goStand() }
-        hk.register(key: kVK_DownArrow, modifiers: mods) { deskRef.goSit() }
-        hk.register(key: kVK_UpArrow,   modifiers: mods | HotKeyManager.shift) { deskRef.nudge(2) }
-        hk.register(key: kVK_DownArrow, modifiers: mods | HotKeyManager.shift) { deskRef.nudge(-2) }
-        hk.register(key: kVK_Space,     modifiers: mods) { deskRef.stop() }
+        HotKeyManager.shared.start()
+        HotKeyManager.shared.observe(ShortcutSettings.shared, desk: DeskController.shared)
     }
 
     private static func terminateIfAlreadyRunning() {

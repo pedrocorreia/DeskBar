@@ -2,6 +2,8 @@ import SwiftUI
 
 struct PopoverView: View {
     @ObservedObject var desk: DeskController
+    @ObservedObject var shortcuts: ShortcutSettings
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -72,19 +74,25 @@ struct PopoverView: View {
 
     private var nudgeRow: some View {
         HStack(spacing: 8) {
-            Button { desk.nudge(-2) } label: {
-                Label("2 cm", systemImage: "minus").frame(maxWidth: .infinity)
+            Button { desk.nudge(-desk.nudgeCm) } label: {
+                Label(nudgeLabel, systemImage: "minus").frame(maxWidth: .infinity)
             }
             Button { desk.stop() } label: {
                 Label("Stop", systemImage: "stop.fill").frame(maxWidth: .infinity)
             }
             .tint(.red)
-            Button { desk.nudge(2) } label: {
-                Label("2 cm", systemImage: "plus").frame(maxWidth: .infinity)
+            Button { desk.nudge(desk.nudgeCm) } label: {
+                Label(nudgeLabel, systemImage: "plus").frame(maxWidth: .infinity)
             }
         }
         .buttonStyle(.bordered)
         .disabled(!desk.isReady)
+    }
+
+    private var nudgeLabel: String {
+        desk.nudgeCm == desk.nudgeCm.rounded()
+            ? "\(Int(desk.nudgeCm)) cm"
+            : String(format: "%.1f cm", desk.nudgeCm)
     }
 
     private var presetConfig: some View {
@@ -99,6 +107,21 @@ struct PopoverView: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
             .disabled(!desk.isReady)
+
+            HStack {
+                Text("Nudge amount").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                TextField("", value: $desk.nudgeCm, format: .number.precision(.fractionLength(0...1)))
+                    .frame(width: 40)
+                    .multilineTextAlignment(.trailing)
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
+                    // Binding(get:set:) here would rebuild identity every
+                    // render and risk fighting in-progress typing — clamp on
+                    // commit instead, via the direct binding.
+                    .onSubmit { desk.setNudgeCm(desk.nudgeCm) }
+                Text("cm").font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -142,6 +165,12 @@ struct PopoverView: View {
             } else {
                 Text(desk.deskName.isEmpty ? "Not connected" : desk.deskName)
                     .font(.caption).foregroundStyle(.secondary)
+                if !desk.deskID.isEmpty {
+                    Text(desk.deskID)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .textSelection(.enabled)
+                }
             }
         }
     }
@@ -159,11 +188,21 @@ struct PopoverView: View {
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Global shortcuts")
-                .font(.caption).foregroundStyle(.secondary)
-            shortcutRow("⌃⌥↑ / ⌃⌥↓", "Stand / Sit")
-            shortcutRow("⌃⌥⇧↑ / ⌃⌥⇧↓", "Nudge ±2 cm")
-            shortcutRow("⌃⌥Space", "Stop")
+            HStack {
+                Text("Global shortcuts").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Edit…") {
+                    openWindow(id: "shortcuts")
+                    // Accessory (menu-bar-only) apps are never activated automatically,
+                    // so the new window would open behind everything and never
+                    // become key without this.
+                    NSApplication.shared.activate(ignoringOtherApps: true)
+                }
+                .controlSize(.small)
+            }
+            shortcutRow("\(shortcuts.stand.displayString) / \(shortcuts.sit.displayString)", "Stand / Sit")
+            shortcutRow("\(shortcuts.nudgeUp.displayString) / \(shortcuts.nudgeDown.displayString)", "Nudge ±\(nudgeLabel)")
+            shortcutRow(shortcuts.stop.displayString, "Stop")
             Divider().padding(.vertical, 2)
             Button(role: .destructive) { NSApplication.shared.terminate(nil) } label: {
                 Label("Quit DeskBar", systemImage: "power").frame(maxWidth: .infinity)
