@@ -53,6 +53,10 @@ final class PostureMonitor: NSObject, ObservableObject {
     /// The popover derives a live seconds countdown from this.
     @Published private(set) var nextSwitchAt: Date?
 
+    /// True when the user has reminders on but has denied notification permission
+    /// in System Settings — lets the popover explain why nothing appears.
+    @Published private(set) var notificationsDenied = false
+
     /// Per-day archive of finished days (today lives in sit/standSeconds until it
     /// rolls over at midnight). Pruned to the last ~30 days.
     @Published private(set) var history: [String: DayStat]
@@ -258,12 +262,19 @@ final class PostureMonitor: NSObject, ObservableObject {
                                               actions: [switchAction],
                                               intentIdentifiers: [], options: [])
         center.setNotificationCategories([category])
-        // Only prompt the first time; repeated calls (toggle-on) are no-ops once
-        // the user has already granted or denied, so reminders silently failing
-        // after a denial isn't made worse by repeated prompts.
-        center.getNotificationSettings { settings in
-            guard settings.authorizationStatus == .notDetermined else { return }
-            center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        // Only prompt when undetermined; update notificationsDenied so the UI
+        // can explain why reminders are on but nothing appears.
+        center.getNotificationSettings { [weak self] settings in
+            switch settings.authorizationStatus {
+            case .notDetermined:
+                center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                    Task { @MainActor in self?.notificationsDenied = !granted }
+                }
+            case .denied:
+                Task { @MainActor in self?.notificationsDenied = true }
+            default:
+                Task { @MainActor in self?.notificationsDenied = false }
+            }
         }
     }
 

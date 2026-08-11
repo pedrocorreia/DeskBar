@@ -168,6 +168,11 @@ struct PopoverView: View {
             .toggleStyle(.checkbox)
             .controlSize(.small)
             if posture.remindersEnabled {
+                if posture.notificationsDenied {
+                    Label("Notifications denied — enable in System Settings", systemImage: "bell.slash.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                }
                 HStack(spacing: 6) {
                     Text("Every").font(.caption).foregroundStyle(.secondary)
                     TextField("", value: $posture.intervalMin,
