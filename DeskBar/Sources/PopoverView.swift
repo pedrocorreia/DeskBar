@@ -291,9 +291,15 @@ struct PopoverView: View {
     }
 
     private func weekdayLetter(_ dayKey: String) -> String {
-        let parse = DateFormatter(); parse.dateFormat = "yyyy-MM-dd"
+        let parse = DateFormatter()
+        parse.locale = Locale(identifier: "en_US_POSIX")
+        parse.calendar = Calendar(identifier: .gregorian)
+        parse.dateFormat = "yyyy-MM-dd"
         guard let date = parse.date(from: dayKey) else { return "" }
-        let out = DateFormatter(); out.setLocalizedDateFormatFromTemplate("EEEEE")
+        let out = DateFormatter()
+        out.locale = Locale(identifier: "en_US_POSIX")
+        out.calendar = Calendar(identifier: .gregorian)
+        out.setLocalizedDateFormatFromTemplate("EEEEE")
         return out.string(from: date)
     }
 
@@ -490,7 +496,7 @@ private struct EditableHeight: View {
             .textFieldStyle(.plain)
             .font(.system(size: 30, weight: .semibold, design: .rounded))
             .monospacedDigit()
-            .fixedSize()
+            .frame(minWidth: 130, alignment: .leading)   // reserve stable width; .fixedSize() shifts layout as digits change
             .focused($editing)
             .disabled(!desk.isReady)
             .onSubmit(commit)

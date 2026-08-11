@@ -106,10 +106,12 @@ final class DeskController: NSObject, ObservableObject {
     // Calibration: the desk's absolute height at its lowest position. The BLE
     // characteristic only reports offset-above-minimum, so this baseline decides
     // what "cm" the readout — and move-to targets — are measured against.
-    // Defaults to 68; override it in the popover if your desk (or its panel's
-    // configured display offset) reads differently. Persisted; deliberately not
-    // clamped in didSet (the popover's TextField binds directly to $minCm and a
-    // re-entrant clamp fights live typing) — clamp on commit via setMinCm(_:).
+    // Defaults to 62 (verified against the reference desk: raw 1458 → 76.6 cm,
+    // matching idasen's 0.62 m base); override it in the popover if your desk
+    // or its panel's configured display offset reads differently. Persisted;
+    // deliberately not clamped in didSet (the popover's TextField binds directly
+    // to $minCm and a re-entrant clamp fights live typing) — clamp on commit via
+    // setMinCm(_:).
     @Published var minCm: Double { didSet { UserDefaults.standard.set(minCm, forKey: "minCm") } }
 
     /// Usable maximum height = calibrated minimum + fixed travel span.
@@ -150,7 +152,7 @@ final class DeskController: NSObject, ObservableObject {
         sitCm = d.object(forKey: "sitCm") as? Double ?? 74.0
         standCm = d.object(forKey: "standCm") as? Double ?? 110.0
         nudgeCm = d.object(forKey: "nudgeCm") as? Double ?? 2.0
-        minCm = d.object(forKey: "minCm") as? Double ?? 68.0
+        minCm = d.object(forKey: "minCm") as? Double ?? 62.0
         nicknames = (d.dictionary(forKey: "deskNicknames") as? [String: String]) ?? [:]
         super.init()
         central = CBCentralManager(delegate: self, queue: .main)

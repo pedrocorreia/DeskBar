@@ -112,6 +112,7 @@ final class PostureMonitor: NSObject, ObservableObject {
     // MARK: - Lifecycle
 
     func start() {
+        guard timer == nil else { return }   // idempotent — second call is a no-op
         UNUserNotificationCenter.current().delegate = self
         observeScreenLock()
         if remindersEnabled { enableReminders() }
@@ -241,6 +242,8 @@ final class PostureMonitor: NSObject, ObservableObject {
 
     private static func dayKey(_ date: Date) -> String {
         let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.calendar = Calendar(identifier: .gregorian)
         f.dateFormat = "yyyy-MM-dd"
         return f.string(from: date)
     }
@@ -255,7 +258,13 @@ final class PostureMonitor: NSObject, ObservableObject {
                                               actions: [switchAction],
                                               intentIdentifiers: [], options: [])
         center.setNotificationCategories([category])
-        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        // Only prompt the first time; repeated calls (toggle-on) are no-ops once
+        // the user has already granted or denied, so reminders silently failing
+        // after a denial isn't made worse by repeated prompts.
+        center.getNotificationSettings { settings in
+            guard settings.authorizationStatus == .notDetermined else { return }
+            center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        }
     }
 
     /// (Re)arm the one-shot timer that fires the next reminder exactly at
