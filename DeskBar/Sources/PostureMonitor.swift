@@ -154,8 +154,9 @@ final class PostureMonitor: NSObject, ObservableObject {
                 account(upTo: now)      // flush the tail before pausing
                 present = false
                 scheduleReminder()      // present == false → clears the countdown
+                // Keep activePosture so the resume path below can detect whether
+                // the posture changed across the pause (e.g. sleep/wake).
             }
-            activePosture = nil
             lastAccountAt = now
             return
         }
@@ -163,13 +164,25 @@ final class PostureMonitor: NSObject, ObservableObject {
         let posture: Posture = desk.isStanding ? .standing : .sitting
 
         guard present else {
-            // Resuming after a pause (or the very first tick): start fresh —
-            // don't bill the gap, and don't fire the instant you return.
+            // Resuming after a pause (or the very first tick): don't bill the gap.
+            // Preserve the countdown position if the same posture continues and the
+            // interval hasn't elapsed yet — this keeps sleep/wake from silently
+            // resetting a countdown that was already well underway.
             present = true
+            if posture == activePosture && nextRemindAt > now {
+                // Same posture, interval still in the future — re-arm at the
+                // original fire time; no progress lost.
+            } else if posture == activePosture {
+                // Same posture but the interval elapsed while away; fire shortly
+                // after returning rather than a full interval from now.
+                nextRemindAt = now.addingTimeInterval(tickInterval)
+            } else {
+                // Posture changed (or first tick: activePosture is nil) — fresh interval.
+                nextRemindAt = now.addingTimeInterval(intervalMin * 60)
+            }
             activePosture = posture
             lastAccountAt = now
             postureRunStart = now
-            nextRemindAt = now.addingTimeInterval(intervalMin * 60)
             scheduleReminder()
             return
         }
