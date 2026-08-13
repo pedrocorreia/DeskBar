@@ -17,6 +17,7 @@ swiftc -O \
     -o "$BIN" \
     Sources/*.swift \
     -framework SwiftUI -framework AppKit -framework CoreBluetooth -framework Carbon \
+    -framework UserNotifications -framework IOKit \
     -target arm64-apple-macos13.0
 
 echo "Installing Info.plist…"
