@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import Combine
 import IOKit
 import UserNotifications
 
@@ -84,6 +85,10 @@ final class PostureMonitor: NSObject, ObservableObject {
     private var lastAccountAt = Date()
     private var postureRunStart = Date()
     private var nextRemindAt = Date.distantFuture
+    // Tracks the height at the last movement-reset so small BLE fluctuations
+    // don't repeatedly re-arm the countdown.
+    private var lastResetHeight: Double = 0
+    private var cancellables = Set<AnyCancellable>()
 
     private let tickInterval: TimeInterval = 30
     private let idleLimitSeconds: Double = 600   // 10 min away → pause
@@ -119,6 +124,7 @@ final class PostureMonitor: NSObject, ObservableObject {
         guard timer == nil else { return }   // idempotent — second call is a no-op
         UNUserNotificationCenter.current().delegate = self
         observeScreenLock()
+        observeHeightChanges()
         if remindersEnabled { enableReminders() }
         lastAccountAt = Date()
         tick()   // seed immediately so "Today" isn't blank until the first interval
@@ -127,6 +133,29 @@ final class PostureMonitor: NSObject, ObservableObject {
         }
         t.tolerance = tickInterval * 0.5   // coarse timer; let macOS coalesce wake-ups
         timer = t
+    }
+
+    /// Reset the reminder countdown whenever the desk moves ≥ 0.3 cm — covers
+    /// both app-driven moves (goSit/goStand/nudge) and manual physical movement.
+    private func observeHeightChanges() {
+        lastResetHeight = desk.heightCm
+        desk.$heightCm
+            .dropFirst()
+            .sink { [weak self] newH in
+                guard let self, self.present, self.remindersEnabled else { return }
+                guard abs(newH - self.lastResetHeight) >= 0.3 else { return }
+                self.lastResetHeight = newH
+                self.resetCountdownAfterMove()
+            }
+            .store(in: &cancellables)
+    }
+
+    private func resetCountdownAfterMove() {
+        let posture: Posture = desk.isStanding ? .standing : .sitting
+        activePosture = posture
+        postureRunStart = Date()
+        nextRemindAt = Date().addingTimeInterval(intervalMin * 60)
+        scheduleReminder()
     }
 
     func setIntervalMin(_ value: Double) {
@@ -183,6 +212,7 @@ final class PostureMonitor: NSObject, ObservableObject {
             activePosture = posture
             lastAccountAt = now
             postureRunStart = now
+            lastResetHeight = desk.heightCm   // baseline so reconnect height jump doesn't re-arm
             scheduleReminder()
             return
         }
