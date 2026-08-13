@@ -25,7 +25,7 @@ controller (a desk advertising as `DESK ####`).
 - 📏 **Live height** shown right in the menu bar.
 - ✏️ **Editable height** — click the readout, type an exact target (e.g. `100.1`), and press
   Return to move straight there.
-- 🎚️ **Calibratable minimum** — set your desk's lowest height (defaults to 62 cm) so the readout
+- 🎚️ **Calibratable minimum** — set your desk's lowest height (defaults to 68 cm) so the readout
   matches the physical panel.
 - ⏰ **Posture reminders & tracking** — see today's sit/stand split and get nudged to switch on
   your own interval (optionally auto-switching the desk).
@@ -157,7 +157,7 @@ handshake.** The working sequence is:
 4. **Stop:** `ff 00` to the command char, `01 80` to reference input.
 
 Height decode from `99fa0021`: little-endian, `cm = raw / 100 + base`, where `base` is the
-desk's mechanical minimum (configurable in the app; defaults to 62 cm). The raw value is the
+desk's mechanical minimum (configurable in the app; defaults to 68 cm). The raw value is the
 offset above that minimum, so `base` sets the absolute reading — calibrate it to match your
 physical panel.
 

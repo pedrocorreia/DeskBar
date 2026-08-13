@@ -35,11 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while the desk is disconnected, the screen is locked, or you've been idle >10 min, so an
   empty desk is neither counted nor nagged; totals reset daily.
 - **Calibratable minimum height.** The readout turns the desk's raw Bluetooth value into cm
-  by adding the desk's mechanical minimum, which was hardcoded. It now defaults to **62 cm**
-  (backward-compatible with the original constant, and verified against the reference desk)
-  and is editable in the popover ("Min height"), so the reading matches your physical panel.
-  The usable maximum tracks it (minimum + a fixed 65 cm travel), and changing it refreshes
-  the readout immediately.
+  by adding the desk's mechanical minimum, which was hardcoded and assumed to be 62 cm. It
+  now defaults to **68 cm** and is editable in the popover ("Min height"), so the reading
+  matches your physical panel. The usable maximum tracks it (minimum + a fixed 65 cm travel),
+  and changing it refreshes the readout immediately.
 
 ## [1.3.0] - 2026-08-06
 
