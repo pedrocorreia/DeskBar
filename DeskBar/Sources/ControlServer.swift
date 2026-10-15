@@ -15,7 +15,10 @@ import Foundation
 /// Protocol: one JSON object per line in, one JSON object per line out.
 ///   → {"cmd":"set_height","height_cm":77}
 ///   ← {"ok":true,"ready":true,"height_cm":77.0,"posture":"sitting","moving":false,
-///      "sit_cm":74,"stand_cm":110,"nudge_cm":2,"name":"Desk","desk_id":"…"}
+///      "sit_cm":74,"stand_cm":110,"nudge_cm":2,"name":"Desk","desk_id":"…",
+///      "desks":[{"name":"Desk","desk_id":"…","ready":true,"height_cm":77.0,"moving":false}]}
+/// Movement commands apply to every connected desk; the top-level height/name
+/// describe the primary (first connected) one, `desks` lists them all.
 final class ControlServer {
     static let shared = ControlServer()
 
@@ -238,7 +241,8 @@ private enum DeskBridge {
             return snapshot(ok: false, error: "Desk didn't reach the target in time; stopped.")
         }
         if !desk.lastMoveReachedTarget {
-            return snapshot(ok: false, error: "Desk stopped short of the target (obstruction or travel limit).")
+            let names = desk.desksShortOfTarget.map(\.displayName).joined(separator: ", ")
+            return snapshot(ok: false, error: "Stopped short of the target (obstruction or travel limit): \(names).")
         }
         return snapshot(ok: true)
     }
@@ -269,6 +273,10 @@ private enum DeskBridge {
             "nudge_cm": desk.nudgeCm,
             "name": desk.deskName,
             "desk_id": desk.deskID,
+            "desks": desk.desks.map { d -> [String: Any] in
+                ["name": d.displayName, "desk_id": d.id.uuidString, "ready": d.isReady,
+                 "height_cm": d.heightCm, "moving": d.isMoving]
+            },
         ]
         if let error { d["error"] = error }
         return d

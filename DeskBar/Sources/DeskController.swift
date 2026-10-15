@@ -1,42 +1,19 @@
 import Foundation
 @preconcurrency import CoreBluetooth
 
-// LINAK DPG1C BLE protocol. See prototype/ and the project memory for how this
-// was reverse-engineered. Char UUIDs all share the …-338a-1024-8a49-009c0215f78a base.
-enum DeskUUID {
-    static let command        = CBUUID(string: "99fa0002-338a-1024-8a49-009c0215f78a")
-    static let heightSpeed    = CBUUID(string: "99fa0021-338a-1024-8a49-009c0215f78a")
-    static let referenceInput = CBUUID(string: "99fa0031-338a-1024-8a49-009c0215f78a")
-    static let dpg            = CBUUID(string: "99fa0011-338a-1024-8a49-009c0215f78a")
-    static let controlService = CBUUID(string: "99fa0001-338a-1024-8a49-009c0215f78a")
-}
-
-private enum Cmd {
-    static let up      = Data([0x47, 0x00])
-    static let down    = Data([0x46, 0x00])
-    static let stop    = Data([0xFF, 0x00])
-    static let wakeup  = Data([0xFE, 0x00])
-    static let refStop = Data([0x01, 0x80])
-    // DPG "wakeup" handshake — the DPG1C ignores movement without this.
-    static let dpg1 = Data([0x7F, 0x86, 0x00])
-    static let dpg2 = Data([0x7F, 0x86, 0x80, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
-                            0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
-                            0x10, 0x11])
-}
-
-// LINAK desks report height as an offset above their mechanical minimum, so
-// converting the raw BLE value into an absolute cm reading means adding that
-// minimum back. The minimum varies by model (and by any display offset set on
-// the physical panel), so it's user-calibratable — see DeskController.minCm.
-// The usable travel above the minimum is a fixed hardware span.
-private let kTravelCm = 65.0   // was kMaxCm(127) − kMinCm(62)
-
 struct DiscoveredDesk: Identifiable, Equatable {
     let id: UUID
     var name: String
     var rssi: Int
 }
 
+/// Owns the CoreBluetooth central and the set of connected desks, and fans every
+/// command out to all of them — "Stand" or "100 cm" moves every connected desk.
+///
+/// The single-desk-shaped API (heightCm, isReady, moveTo, goSit, …) is kept as an
+/// aggregate so hotkeys, PostureMonitor and ControlServer drive all desks without
+/// knowing there's more than one. Reads like heightCm/isStanding come from the
+/// *primary* desk: the first connected one in the list.
 @MainActor
 final class DeskController: NSObject, ObservableObject {
     // `_desk.wrappedValue` in DeskBarApp.init() reads a @StateObject before
@@ -47,32 +24,40 @@ final class DeskController: NSObject, ObservableObject {
     // singleton means "a new instance" always resolves to the same object.
     static let shared = DeskController()
 
-    // Published UI state
-    @Published var heightCm: Double = 0
-    @Published var speed: Int = 0
-    @Published var isReady = false          // connected + characteristics discovered
-    @Published var statusText = "Starting…"
-    @Published var isMoving = false
-    @Published var deskName = ""
+    /// Connected (or reconnecting) desks, in the order they were added.
+    @Published private(set) var desks: [DeskConnection] = []
 
-    // Whether the last movement actually arrived at its target (vs. stalled,
-    // hit a travel limit, or was stopped). Read by ControlServer.move() so the
-    // MCP client isn't told a short/interrupted move succeeded. Set false when a
-    // move starts, true only when finishMove(reached: true) fires.
-    private(set) var lastMoveReachedTarget = true
+    // Aggregate UI state, re-derived from `desks` by refresh(). Only assigned
+    // when the value actually changes, so subscribers (PostureMonitor watches
+    // $heightCm) aren't spammed by one desk's updates echoing through.
+    @Published private(set) var heightCm: Double = 0
+    @Published private(set) var isReady = false          // at least one desk ready
+    @Published private(set) var statusText = "Starting…"
+    @Published private(set) var isMoving = false         // any desk moving
+    @Published private(set) var deskName = ""
+
+    // Bluetooth-level problem (off / denied), which trumps per-desk status.
+    private var centralStatus: String?
+
+    // Desks the last moveTo was sent to. lastMoveReachedTarget is true only if
+    // every one of them arrived — ControlServer reports a partial move as a failure.
+    private var lastMoveDesks: [DeskConnection] = []
+    var lastMoveReachedTarget: Bool { lastMoveDesks.allSatisfy(\.lastMoveReachedTarget) }
+    /// Desks from the last move that stopped short, for error reporting.
+    var desksShortOfTarget: [DeskConnection] { lastMoveDesks.filter { !$0.lastMoveReachedTarget } }
 
     // Desk-picker ("pairing") state
     @Published var isPairing = false
     @Published var discovered: [DiscoveredDesk] = []
     private var discoveredPeripherals: [UUID: CBPeripheral] = [:]
 
-    // User presets (persisted)
+    // User presets (persisted). Shared by all desks — the point is to bring
+    // every desk to the same sit/stand height.
     @Published var sitCm: Double  { didSet { UserDefaults.standard.set(sitCm, forKey: "sitCm") } }
     @Published var standCm: Double { didSet { UserDefaults.standard.set(standCm, forKey: "standCm") } }
 
     // Local, user-assigned desk nicknames, keyed by CoreBluetooth peripheral
-    // UUID (the same id as deskID / deskUUID). Purely local — it never touches
-    // the desk's advertised BLE name.
+    // UUID. Purely local — it never touches the desk's advertised BLE name.
     @Published private var nicknames: [String: String] {
         didSet { UserDefaults.standard.set(nicknames, forKey: "deskNicknames") }
     }
@@ -88,6 +73,7 @@ final class DeskController: NSObject, ObservableObject {
         let trimmed = (name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { nicknames.removeValue(forKey: id) }
         else { nicknames[id] = trimmed }
+        refresh()   // deskName may be the nickname
     }
 
     // Nudge step, user-configurable (persisted). Clamped to a sane physical
@@ -103,76 +89,76 @@ final class DeskController: NSObject, ObservableObject {
         nudgeCm = min(max(value, 0.5), 20.0)
     }
 
-    // Calibration: the desk's absolute height at its lowest position. The BLE
-    // characteristic only reports offset-above-minimum, so this baseline decides
-    // what "cm" the readout — and move-to targets — are measured against.
-    // Defaults to 68; override it in the popover if your desk (or its panel's
-    // configured display offset) reads differently. Persisted; deliberately not
-    // clamped in didSet (the popover's TextField binds directly to $minCm and a
-    // re-entrant clamp fights live typing) — clamp on commit via setMinCm(_:).
-    @Published var minCm: Double { didSet { UserDefaults.standard.set(minCm, forKey: "minCm") } }
-
-    /// Usable maximum height = calibrated minimum + fixed travel span.
-    var maxCm: Double { minCm + kTravelCm }
-
-    // Most recent raw height sample (0.1 mm units above the minimum). Retained
-    // so recalibrating minCm can refresh the readout immediately rather than
-    // waiting for the next BLE notification (the desk is silent when idle).
-    private var lastRawHeight: UInt16 = 0
-
-    func setMinCm(_ value: Double) {
-        minCm = min(max(value, 40.0), 100.0)
-        if isReady { heightCm = Double(lastRawHeight) / 100.0 + minCm }
-    }
-
     private var central: CBCentralManager!
-    private var peripheral: CBPeripheral?
-    private var chars: [CBUUID: CBCharacteristic] = [:]
 
-    // Movement loop
-    private var targetCm: Double?
-    private var moveTimer: Timer?
-    private var moveStart = Date()
-    private var lastProgressHeight = 0.0
-    private var lastProgressTime = Date()
-
-    // CoreBluetooth's connect() has no timeout: if the target peripheral isn't
-    // actually advertising (BLE-asleep, out of range, stale discovery), it hangs
-    // on "Connecting…" forever. This timer promotes any stuck connect attempt to
-    // an active re-scan after a grace period.
-    private var connectTimeoutTimer: Timer?
-
-    // Known desk identifier (from the prototype scan). Falls back to scanning.
+    // Known desk identifier (from the prototype scan), tried on a fresh install.
     private let defaultUUID = "A6EB36A7-8AB4-E267-D74C-B9E8D1EC8195"
+    private static let savedDesksKey = "deskUUIDs"
+
+    // Only a fresh install (nothing ever saved) auto-adopts the first desk a
+    // scan finds. Once the user has managed the list — even removing every
+    // desk — an empty list must stay empty rather than grab a neighbour's desk.
+    private lazy var autoAdopt: Bool = {
+        let d = UserDefaults.standard
+        return d.object(forKey: Self.savedDesksKey) == nil && d.object(forKey: "deskUUID") == nil
+    }()
 
     override init() {
         let d = UserDefaults.standard
         sitCm = d.object(forKey: "sitCm") as? Double ?? 74.0
         standCm = d.object(forKey: "standCm") as? Double ?? 110.0
         nudgeCm = d.object(forKey: "nudgeCm") as? Double ?? 2.0
-        minCm = d.object(forKey: "minCm") as? Double ?? 68.0
         nicknames = (d.dictionary(forKey: "deskNicknames") as? [String: String]) ?? [:]
         super.init()
         central = CBCentralManager(delegate: self, queue: .main)
     }
 
+    /// The desk whose height the menu bar and header show: first ready, else first.
+    var primary: DeskConnection? { desks.first(where: \.isReady) ?? desks.first }
+    var readyDesks: [DeskConnection] { desks.filter(\.isReady) }
+
     var isStanding: Bool { heightCm >= (sitCm + standCm) / 2 }
 
-    /// CoreBluetooth UUID of the currently connected/selected desk (macOS-specific,
-    /// not the hardware MAC — same identifier `desk.py scan` prints).
-    var deskID: String { peripheral?.identifier.uuidString ?? "" }
+    /// CoreBluetooth UUID of the primary desk (macOS-specific, not the hardware
+    /// MAC — same identifier `desk.py scan` prints).
+    var deskID: String { primary?.id.uuidString ?? "" }
 
-    // MARK: - Public actions
+    // MARK: - Public actions (all desks)
 
     func goSit()   { moveTo(cm: sitCm) }
     func goStand() { moveTo(cm: standCm) }
-    func nudge(_ delta: Double) { moveTo(cm: heightCm + delta) }
     func setSitToCurrent()   { sitCm = heightCm.rounded() }
     func setStandToCurrent() { standCm = heightCm.rounded() }
 
+    func moveTo(cm: Double) {
+        lastMoveDesks = readyDesks
+        for d in lastMoveDesks { d.moveTo(cm: cm) }
+    }
+
+    /// Relative to each desk's own height, so desks at different heights keep
+    /// their offset rather than snapping together.
+    func nudge(_ delta: Double) {
+        lastMoveDesks = readyDesks
+        for d in lastMoveDesks { d.moveTo(cm: d.heightCm + delta) }
+    }
+
+    /// Send each desk to its own random height within its calibrated range.
+    /// Inset by the same 0.5 cm DeskConnection.moveTo clamps to, so the pick is
+    /// never silently pulled back onto a travel limit.
+    func randomize() {
+        lastMoveDesks = readyDesks
+        for d in lastMoveDesks {
+            d.moveTo(cm: Double.random(in: (d.minCm + 0.5)...(d.maxCm - 0.5)).rounded())
+        }
+    }
+
+    func stop() {
+        for d in desks { d.stop() }
+    }
+
     // MARK: - Desk picker
 
-    /// Start scanning and collecting nearby desks instead of auto-connecting.
+    /// Start scanning and collecting nearby desks to add. Existing connections stay up.
     func beginPairing() {
         // Clear first, before the power-state guard — otherwise a scan attempted
         // while Bluetooth is off leaves the previous session's results in place,
@@ -183,148 +169,116 @@ final class DeskController: NSObject, ObservableObject {
         isPairing = true
         central.stopScan()
         central.scanForPeripherals(withServices: nil)   // catch non-advertising units too
-        statusText = "Searching for desks…"
+        refresh()
     }
 
     func cancelPairing() {
         isPairing = false
-        central.stopScan()
-        statusText = isReady ? "Connected" : "Not connected"
+        refresh()   // also winds the scan down to whatever reconnects still need
     }
 
-    /// Switch to a chosen desk: remember it, drop the old connection, connect the new one.
-    func select(_ desk: DiscoveredDesk) {
-        isPairing = false
-        central.stopScan()
-        UserDefaults.standard.set(desk.id.uuidString, forKey: "deskUUID")
-
-        let old = peripheral
-        let newP = discoveredPeripherals[desk.id]
-            ?? central.retrievePeripherals(withIdentifiers: [desk.id]).first
-        // Point at the new target first so didDisconnect ignores the old one.
-        peripheral = newP
-        deskName = desk.name
-        isReady = false
-        chars = [:]
-        if let old, old.identifier != newP?.identifier {
-            central.cancelPeripheralConnection(old)
-        }
-        if let newP {
-            newP.delegate = self
-            statusText = "Connecting…"
-            central.connect(newP)
-            scheduleConnectTimeout(for: newP)
-        }
+    /// Add a chosen desk alongside the existing ones. Pairing stays open so
+    /// several desks can be picked in a row; the picker hides ones already added.
+    func add(_ desk: DiscoveredDesk) {
+        guard !desks.contains(where: { $0.id == desk.id }) else { return }
+        guard let p = discoveredPeripherals[desk.id]
+            ?? central.retrievePeripherals(withIdentifiers: [desk.id]).first else { return }
+        attach(p, name: desk.name)
     }
 
-    func moveTo(cm: Double) {
-        guard isReady, let p = peripheral else { return }
-        let target = min(max(cm, minCm + 0.5), maxCm - 0.5)
-        targetCm = target
-        isMoving = true
-        lastMoveReachedTarget = false   // set true only if we actually arrive
-        statusText = String(format: "Moving to %.0f cm…", target)
-
-        // 1) DPG handshake, 2) prime with wakeup+stop.
-        write(Cmd.dpg1, to: DeskUUID.dpg, .withResponse)
-        write(Cmd.dpg2, to: DeskUUID.dpg, .withResponse)
-        write(Cmd.wakeup, to: DeskUUID.command, .withResponse)
-        write(Cmd.stop, to: DeskUUID.command, .withResponse)
-        _ = p // keep reference
-
-        moveStart = Date()
-        lastProgressHeight = heightCm
-        lastProgressTime = Date()
-        moveTimer?.invalidate()
-        moveTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.moveTick() }
-        }
+    /// Disconnect a desk and stop reconnecting to it on launch.
+    func remove(_ id: UUID) {
+        guard let idx = desks.firstIndex(where: { $0.id == id }) else { return }
+        let d = desks.remove(at: idx)
+        d.disconnect(central: central)
+        lastMoveDesks.removeAll { $0.id == id }
+        saveDesks()
+        refresh()
     }
 
-    func stop() {
-        moveTimer?.invalidate()
-        moveTimer = nil
-        targetCm = nil
-        isMoving = false
-        write(Cmd.stop, to: DeskUUID.command, .withResponse)
-        write(Cmd.refStop, to: DeskUUID.referenceInput, .withResponse)
-        statusText = isReady ? "Connected" : statusText
+    private func attach(_ p: CBPeripheral, name: String) {
+        autoAdopt = false
+        let conn = DeskConnection(peripheral: p, name: name, owner: self)
+        desks.append(conn)
+        saveDesks()
+        conn.connect(using: central)
+        refresh()
     }
 
-    // MARK: - Movement loop
-
-    private func moveTick() {
-        guard let target = targetCm else { return }
-        let diff = abs(heightCm - target)
-        if diff <= 0.6 { finishMove(reached: true); return }
-        if Date().timeIntervalSince(moveStart) > 40 { finishMove(reached: false); return }
-
-        // Stall detection: if height hasn't progressed for >1.2s (after a grace
-        // period), the desk hit a limit or is blocked.
-        if abs(heightCm - lastProgressHeight) > 0.2 {
-            lastProgressHeight = heightCm
-            lastProgressTime = Date()
-        } else if Date().timeIntervalSince(moveStart) > 1.5,
-                  Date().timeIntervalSince(lastProgressTime) > 1.2 {
-            finishMove(reached: false)
-            return
-        }
-
-        write(encodeTargetCm(target), to: DeskUUID.referenceInput, .withoutResponse)
+    private func saveDesks() {
+        UserDefaults.standard.set(desks.map(\.id.uuidString), forKey: Self.savedDesksKey)
     }
 
-    private func finishMove(reached: Bool) {
-        lastMoveReachedTarget = reached
-        stop()
-        statusText = reached ? "Connected" : "Stopped"
+    /// Saved desk ids, migrating the single-desk "deskUUID" key from older versions.
+    private func savedDeskIDs() -> [UUID] {
+        let d = UserDefaults.standard
+        let strings = d.stringArray(forKey: Self.savedDesksKey)
+            ?? [d.string(forKey: "deskUUID") ?? defaultUUID]
+        return strings.compactMap(UUID.init(uuidString:))
     }
 
-    // MARK: - Encoding
+    // MARK: - Aggregate state
 
-    private func encodeTargetCm(_ cm: Double) -> Data {
-        let raw = Int(((cm - minCm) / 100.0 * 10000.0).rounded())
-        let clamped = UInt16(min(max(raw, 0), 65535))
-        return Data([UInt8(clamped & 0xFF), UInt8(clamped >> 8)])
+    /// Re-derive the aggregate published state from the per-desk connections.
+    func refresh() {
+        let p = primary
+        setIfChanged(\.heightCm, p?.heightCm ?? 0)
+        setIfChanged(\.isReady, desks.contains(where: \.isReady))
+        setIfChanged(\.isMoving, desks.contains(where: \.isMoving))
+        setIfChanged(\.deskName, p?.displayName ?? "")
+        setIfChanged(\.statusText, aggregateStatus())
+        updateScanning()   // e.g. stop the reconnect scan once the last desk is ready
     }
 
-    private func decodeHeightSpeed(_ data: Data) {
-        guard data.count >= 2 else { return }
-        let rawH = UInt16(data[0]) | (UInt16(data[1]) << 8)
-        lastRawHeight = rawH
-        heightCm = Double(rawH) / 100.0 + minCm
-        if data.count >= 4 {
-            let rawS = UInt16(data[2]) | (UInt16(data[3]) << 8)
-            speed = Int(Int16(bitPattern: rawS))
-        }
+    private func setIfChanged<T: Equatable>(_ kp: ReferenceWritableKeyPath<DeskController, T>, _ v: T) {
+        if self[keyPath: kp] != v { self[keyPath: kp] = v }
     }
 
-    // MARK: - BLE write helper
-
-    private func write(_ data: Data, to uuid: CBUUID, _ type: CBCharacteristicWriteType) {
-        guard let p = peripheral, let ch = chars[uuid] else { return }
-        p.writeValue(data, for: ch, type: type)
+    private func aggregateStatus() -> String {
+        if let centralStatus { return centralStatus }
+        if isPairing { return "Searching for desks…" }
+        if desks.isEmpty { return "No desk — add one below" }
+        if let moving = desks.first(where: \.isMoving) { return moving.statusText }
+        if desks.count == 1 { return desks[0].statusText }
+        let ready = desks.filter(\.isReady).count
+        return ready == desks.count ? "\(ready) desks connected" : "\(ready) of \(desks.count) desks connected"
     }
 
     // MARK: - Connection
 
-    fileprivate func connectKnownOrScan() {
-        if let uuid = UUID(uuidString: UserDefaults.standard.string(forKey: "deskUUID") ?? defaultUUID) {
-            let known = central.retrievePeripherals(withIdentifiers: [uuid])
-            if let p = known.first {
-                statusText = "Connecting…"
-                peripheral = p
-                p.delegate = self
-                central.connect(p)
-                scheduleConnectTimeout(for: p)
-                return
+    fileprivate func connectSavedOrScan() {
+        if desks.isEmpty {
+            let ids = savedDeskIDs()
+            let known = central.retrievePeripherals(withIdentifiers: ids)
+            // Keep the saved order, not whatever order CoreBluetooth returns.
+            for id in ids {
+                if let p = known.first(where: { $0.identifier == id }) { attach(p, name: p.name ?? "") }
             }
+        } else {
+            for d in desks where !d.isReady { d.connect(using: central) }
         }
-        statusText = "Scanning…"
-        central.scanForPeripherals(withServices: [DeskUUID.controlService])
-        // Some units don't advertise the service; broaden after a moment.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
-            guard let self, !self.isReady, self.peripheral == nil else { return }
-            self.central.scanForPeripherals(withServices: nil)
+        updateScanning()
+    }
+
+    /// A desk's connect attempt stalled: it was cancelled, so actively scan for
+    /// it (didDiscover reconnects any saved desk it sees) and re-arm a connect.
+    func connectionTimedOut(_ conn: DeskConnection) {
+        guard desks.contains(where: { $0 === conn }) else { return }
+        conn.connect(using: central)
+        updateScanning()
+    }
+
+    /// Keep a background scan running while pairing, while any saved desk is
+    /// still unreachable, or (fresh install) to auto-adopt the first desk found.
+    /// Stop it once every desk is connected — scanning costs radio time.
+    private func updateScanning() {
+        guard central.state == .poweredOn else { return }
+        if isPairing { return }   // pairing already runs a broad scan
+        let needScan = (desks.isEmpty && autoAdopt) || desks.contains(where: { !$0.isReady })
+        if needScan && !central.isScanning {
+            central.scanForPeripherals(withServices: nil)
+        } else if !needScan && central.isScanning {
+            central.stopScan()
         }
     }
 }
@@ -333,11 +287,12 @@ extension DeskController: CBCentralManagerDelegate {
     nonisolated func centralManagerDidUpdateState(_ central: CBCentralManager) {
         Task { @MainActor in
             switch central.state {
-            case .poweredOn: connectKnownOrScan()
-            case .unauthorized: statusText = "Bluetooth permission denied"
-            case .poweredOff: statusText = "Bluetooth is off"
-            default: statusText = "Bluetooth unavailable"
+            case .poweredOn: centralStatus = nil; connectSavedOrScan()
+            case .unauthorized: centralStatus = "Bluetooth permission denied"
+            case .poweredOff: centralStatus = "Bluetooth is off"
+            default: centralStatus = "Bluetooth unavailable"
             }
+            refresh()
         }
     }
 
@@ -350,8 +305,17 @@ extension DeskController: CBCentralManagerDelegate {
         guard looksLikeDesk || hasService else { return }
         let deskName = name.isEmpty ? "Desk" : name
         Task { @MainActor in
-            // Pairing mode: collect all desks for the picker; don't auto-connect.
+            // A saved desk we're waiting on just showed up: reconnect it.
+            if let conn = self.desks.first(where: { $0.id == peripheral.identifier }) {
+                if !conn.isReady && peripheral.state == .disconnected {
+                    conn.adopt(peripheral)
+                    conn.connect(using: central)
+                }
+                if !self.isPairing { return }
+            }
+            // Pairing mode: collect desks not yet added for the picker.
             if self.isPairing {
+                guard !self.desks.contains(where: { $0.id == peripheral.identifier }) else { return }
                 self.discoveredPeripherals[peripheral.identifier] = peripheral
                 let entry = DiscoveredDesk(id: peripheral.identifier, name: deskName, rssi: RSSI.intValue)
                 if let idx = self.discovered.firstIndex(where: { $0.id == entry.id }) {
@@ -361,100 +325,35 @@ extension DeskController: CBCentralManagerDelegate {
                 }
                 return
             }
-            central.stopScan()
-            UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: "deskUUID")
-            self.peripheral = peripheral
-            self.deskName = deskName
-            peripheral.delegate = self
-            self.statusText = "Connecting…"
-            central.connect(peripheral)
-            self.scheduleConnectTimeout(for: peripheral)
+            // Fresh install: adopt the first desk we see.
+            if self.desks.isEmpty && self.autoAdopt {
+                self.attach(peripheral, name: deskName)
+            }
         }
     }
 
     nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         Task { @MainActor in
-            self.connectTimeoutTimer?.invalidate()
-            self.connectTimeoutTimer = nil
-            if let n = peripheral.name, !n.isEmpty { self.deskName = n }
-            self.statusText = "Discovering…"
-            peripheral.discoverServices(nil)
+            self.desks.first(where: { $0.id == peripheral.identifier })?.didConnect()
+            self.updateScanning()
         }
     }
 
     nonisolated func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral,
                                     error: Error?) {
         Task { @MainActor in
-            // Ignore disconnects from a desk we've already switched away from.
-            guard peripheral.identifier == self.peripheral?.identifier else { return }
-            self.isReady = false
-            self.chars = [:]
-            self.statusText = "Disconnected — reconnecting…"
-            self.central.connect(peripheral)   // fast path: works if the desk is already advertising
-            self.scheduleConnectTimeout(for: peripheral)
-        }
-    }
-
-    /// After a grace period, if a connect() call above hasn't landed, cancel it and
-    /// fall back to an active scan. CoreBluetooth's connect() has no built-in
-    /// timeout, so without this a stale/out-of-range/BLE-asleep peripheral leaves
-    /// the UI stuck on "Connecting…" forever.
-    private func scheduleConnectTimeout(for peripheral: CBPeripheral) {
-        connectTimeoutTimer?.invalidate()
-        connectTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 6.0, repeats: false) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, self.peripheral?.identifier == peripheral.identifier, !self.isReady else { return }
-                self.central.cancelPeripheralConnection(peripheral)
-                self.statusText = "Desk not responding — scanning…"
-                self.connectKnownOrScan()
-            }
+            // Removed desks are already gone from `desks`, so their disconnect is ignored.
+            self.desks.first(where: { $0.id == peripheral.identifier })?.didDisconnect(central: central)
+            self.updateScanning()
         }
     }
 
     nonisolated func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral,
                                     error: Error?) {
         Task { @MainActor in
-            // The timer armed by the failed connect attempt is now moot — if
-            // connectKnownOrScan() below takes the scan branch (not the
-            // known-peripheral branch), nothing else invalidates it, and it
-            // can fire later and redundantly cancel/restart an active scan.
-            self.connectTimeoutTimer?.invalidate()
-            self.connectTimeoutTimer = nil
-            self.statusText = "Connection failed — retrying…"
-            self.connectKnownOrScan()
+            guard let conn = self.desks.first(where: { $0.id == peripheral.identifier }) else { return }
+            conn.didFailToConnect()
+            self.updateScanning()   // didDiscover reconnects it when it next advertises
         }
-    }
-}
-
-extension DeskController: CBPeripheralDelegate {
-    nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        for service in peripheral.services ?? [] {
-            peripheral.discoverCharacteristics(nil, for: service)
-        }
-    }
-
-    nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService,
-                                error: Error?) {
-        Task { @MainActor in
-            for ch in service.characteristics ?? [] {
-                self.chars[ch.uuid] = ch
-                if ch.uuid == DeskUUID.heightSpeed {
-                    peripheral.setNotifyValue(true, for: ch)
-                    peripheral.readValue(for: ch)
-                }
-            }
-            if self.chars[DeskUUID.command] != nil,
-               self.chars[DeskUUID.referenceInput] != nil,
-               self.chars[DeskUUID.heightSpeed] != nil {
-                self.isReady = true
-                self.statusText = "Connected"
-            }
-        }
-    }
-
-    nonisolated func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic,
-                                error: Error?) {
-        guard characteristic.uuid == DeskUUID.heightSpeed, let data = characteristic.value else { return }
-        Task { @MainActor in self.decodeHeightSpeed(data) }
     }
 }

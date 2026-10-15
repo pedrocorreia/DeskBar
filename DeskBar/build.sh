@@ -12,8 +12,28 @@ echo "Cleaning previous build…"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
+# From the macOS 27 SDK on, SwiftUI's @State is a macro backed by the
+# SwiftUIMacros compiler plugin — which ships with Xcode but NOT with the
+# Command Line Tools. Without it every @State fails to expand. If the plugin
+# is missing, fall back to the newest pre-27 SDK installed alongside (the CLT
+# keep older SDKs around); the deployment target is 13.0 so nothing is lost.
+SDK_ARGS=()
+DEV_DIR="$(xcode-select -p)"
+if [[ -z "$(find "$DEV_DIR" -path '*host/plugins/*SwiftUIMacros*' -print -quit 2>/dev/null)" ]]; then
+    SDK_DIR="$(dirname "$(xcrun --show-sdk-path)")"
+    FALLBACK_SDK="$(ls -d "$SDK_DIR"/MacOSX2[0-6]*.sdk 2>/dev/null | sort -V | tail -1 || true)"
+    if [[ -n "$FALLBACK_SDK" ]]; then
+        echo "SwiftUIMacros plugin not found — building against $(basename "$FALLBACK_SDK")"
+        SDK_ARGS=(-sdk "$FALLBACK_SDK")
+    else
+        echo "warning: SwiftUIMacros plugin not found and no pre-27 SDK available;" >&2
+        echo "         install full Xcode or an older Command Line Tools SDK." >&2
+    fi
+fi
+
 echo "Compiling Swift sources…"
 swiftc -O \
+    ${SDK_ARGS[@]+"${SDK_ARGS[@]}"} \
     -o "$BIN" \
     Sources/*.swift \
     -framework SwiftUI -framework AppKit -framework CoreBluetooth -framework Carbon \
