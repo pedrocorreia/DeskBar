@@ -30,7 +30,9 @@ server = MCPServer(
     name="deskbar",
     version="2.0.0",
     instructions=(
-        "Controls a LINAK standing desk via the DeskBar macOS app. Use `get_status` "
+        "Controls the LINAK standing desk(s) connected in the DeskBar macOS app — "
+        "when several desks are connected, every movement applies to all of them. "
+        "Use `get_status` "
         "to read the current height and presets, `stand`/`sit` for the saved presets, "
         "`set_height` for an absolute height in cm, `nudge` for a relative move, and "
         "`stop` to cancel a move in progress. "
@@ -92,6 +94,18 @@ def _presets(r: dict) -> str:
     )
 
 
+def _desk_lines(r: dict) -> str:
+    """Per-desk heights, only when more than one desk is connected."""
+    desks = r.get("desks") or []
+    if len(desks) < 2:
+        return ""
+    rows = []
+    for d in desks:
+        state = f"{d.get('height_cm', 0):.1f} cm" if d.get("ready") else "not connected"
+        rows.append(f"  {d.get('name') or 'Desk'}: {state}")
+    return "\n" + "\n".join(rows)
+
+
 def _describe(r: dict) -> str:
     """Human-readable line for a status/move reply."""
     if not r.get("ok"):
@@ -100,12 +114,14 @@ def _describe(r: dict) -> str:
         return ("DeskBar is running but hasn't connected to the desk yet "
                 "(finding it over Bluetooth). " + _presets(r))
     return (f"Desk is at {r.get('height_cm', 0):.1f} cm "
-            f"({r.get('posture', 'unknown')}). " + _presets(r))
+            f"({r.get('posture', 'unknown')}). " + _presets(r) + _desk_lines(r))
 
 
 def _moved(r: dict) -> str:
     if not r.get("ok"):
-        return r.get("error", "Couldn't move the desk.")
+        return r.get("error", "Couldn't move the desk.") + _desk_lines(r)
+    if len(r.get("desks") or []) > 1:
+        return "Moved all connected desks." + _desk_lines(r)
     return f"Moved the desk to {r.get('height_cm', 0):.1f} cm ({r.get('posture', 'unknown')})."
 
 
@@ -129,7 +145,7 @@ async def sit() -> str:
 
 @server.tool()
 async def set_height(height_cm: float) -> str:
-    """Move the desk to an absolute height in centimetres (clamped to ~62–127)."""
+    """Move the desk(s) to an absolute height in centimetres (clamped to ~62–127)."""
     return _moved(await _request({"cmd": "set_height", "height_cm": height_cm}))
 
 

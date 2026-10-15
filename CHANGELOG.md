@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Control several desks at once.** The Desk section's **Switch…** is now **Add…**: pick as
+  many nearby desks as you like and every command — Sit/Stand, nudge, typed height, global
+  hotkeys, posture auto-switch, and MCP tools — moves all connected desks together. Each desk
+  runs its own handshake and move loop and is listed with its own live height; nudges are
+  relative to each desk's own height. All added desks are reconnected on launch (your previous
+  desk is migrated automatically). The menu bar shows the first connected desk's height.
+- **Randomize.** A small button under the nudge row sends each connected desk to its own
+  random height between its minimum and maximum.
+- **Move a single desk.** Expand a desk's row and type a height under Name / Min height to
+  move just that desk (with its own Stop button while it moves); the main controls still
+  move all desks together.
+- The **minimum height** calibration is now per desk (expand a desk's row), so desks of
+  different models reach the same absolute height. Existing calibration carries over.
+- MCP `get_status` and move replies list every connected desk's height when there's more
+  than one; a move that stops short names the desk(s) that didn't arrive.
+
+### Fixed
+- `build.sh` builds with Command Line Tools on the macOS 27 SDK, where SwiftUI's `@State`
+  macro plugin is missing — it falls back to the newest pre-27 SDK installed.
+
 ### Removed
 - The connected desk's raw CoreBluetooth UUID no longer clutters the popover — the name/nickname
   identifies the desk, and the UUID was only ever there for troubleshooting.

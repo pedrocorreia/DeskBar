@@ -25,16 +25,17 @@ controller (a desk advertising as `DESK ####`).
 - 📏 **Live height** shown right in the menu bar.
 - ✏️ **Editable height** — click the readout, type an exact target (e.g. `100.1`), and press
   Return to move straight there.
-- 🎚️ **Calibratable minimum** — set your desk's lowest height (defaults to 68 cm) so the readout
+- 🎚️ **Calibratable minimum** — set each desk's lowest height (defaults to 68 cm) so the readout
   matches the physical panel.
 - ⏰ **Posture reminders & tracking** — see today's sit/stand split and get nudged to switch on
   your own interval (optionally auto-switching the desk).
 - 🎯 **Daily standing goal & 7-day history** — set a target and watch your standing trend at a
   glance, with a goal line on the chart.
-- 🔀 **Desk switcher** — scan and pick between multiple desks by Bluetooth signal strength.
+- 🔀 **Multiple desks at once** — add several desks; Sit/Stand, nudges, typed heights, hotkeys
+  and MCP commands move **all** of them together. Each desk shows its own live height.
 - 🏷️ **Nameable desks** — assign a local nickname to each desk; the switcher shows the number
   *and* your name (the advertised Bluetooth name is left untouched).
-- 🔌 **Auto-connect & auto-reconnect** to your last desk on launch.
+- 🔌 **Auto-connect & auto-reconnect** to your saved desks on launch.
 - 🤖 **AI control (MCP)** — drive the desk from Claude or any MCP client in natural language.
 - 🐍 **Python prototype** for discovery, debugging, and scripting.
 
@@ -71,7 +72,7 @@ claude mcp add deskbar -- /abs/path/.venv/bin/python /abs/path/mcp/desk_mcp.py
 ```
 
 No `DESK_ADDRESS` or Bluetooth setup is needed for the MCP server — the app handles the desk
-(pick it once via **Desk → Switch…**) and stays the single source of truth for your presets.
+(add desks once via **Desk → Add…**) and stays the single source of truth for your presets.
 
 > **Heads-up:** MCP servers are long-lived — a client loads `desk_mcp.py` once, when it
 > connects. After first registering it (or editing the server), **restart / reconnect the MCP
@@ -115,8 +116,9 @@ DB but filtered out of the search UI, which only shows apps from `~/Applications
 `/Applications`, or `/System/Applications`. Run `./build.sh --install` instead to install to
 `~/Applications` and register it with Launch Services.
 
-**Pairing / switching desks:** open the panel → **Desk → Switch…** → pick the desk with the
-strongest signal (that's the one you're sitting at). Your choice is remembered.
+**Adding desks:** open the panel → **Desk → Add…** → tap each desk you want (the strongest
+signal is the one you're sitting at), then **Done**. Every added desk moves together and is
+reconnected on launch; expand a desk's row to rename it, set its minimum height, or remove it.
 
 ## Quick start — the Python prototype
 
