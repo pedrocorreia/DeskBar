@@ -339,7 +339,7 @@ struct PopoverView: View {
                 }
             }
 
-            if desk.desks.isEmpty && !desk.isPairing {
+            if desk.desks.isEmpty && desk.pendingIDs.isEmpty && !desk.isPairing {
                 Text("No desk connected — tap Add… to find one.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -347,6 +347,22 @@ struct PopoverView: View {
                 ConnectedDeskRow(desk: desk, conn: conn,
                                  expanded: expandedDeskID == conn.id) {
                     expandedDeskID = expandedDeskID == conn.id ? nil : conn.id
+                }
+            }
+            // Saved desks Bluetooth hasn't found yet — removable so a desk that's
+            // gone for good doesn't keep the background scan running forever.
+            ForEach(desk.pendingIDs, id: \.self) { id in
+                HStack(spacing: 6) {
+                    Circle().fill(Color.secondary).frame(width: 7, height: 7)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(desk.nickname(for: id.uuidString) ?? "Saved desk").font(.caption)
+                        Text("Not found yet — searching…").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button { desk.remove(id) } label: { Image(systemName: "xmark.circle") }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("Forget this desk")
                 }
             }
 
@@ -496,9 +512,10 @@ private struct EditableHeight: View {
     @State private var lastSynced = ""
     @FocusState private var editing: Bool
 
-    /// Live value shown when not editing. Number-less "—" until connected.
+    /// Live value shown when not editing. Number-less "—" while the primary desk
+    /// is disconnected (its heightCm is then stale), even if other desks are up.
     private var display: String {
-        desk.isReady ? String(format: "%.1f cm", desk.heightCm) : "—"
+        desk.isPrimaryReady ? String(format: "%.1f cm", desk.heightCm) : "—"
     }
 
     var body: some View {
@@ -598,7 +615,7 @@ private struct ConnectedDeskRow: View {
                             .onSubmit { conn.setMinCm(conn.minCm) }
                         Text("cm").font(.caption).foregroundStyle(.secondary)
                     }
-                    DeskHeightField(conn: conn)
+                    DeskHeightField(desk: desk, conn: conn)
                     Button(role: .destructive) { desk.remove(conn.id) } label: {
                         Label("Remove desk", systemImage: "xmark.circle")
                     }
@@ -619,6 +636,7 @@ private struct ConnectedDeskRow: View {
 /// A plain draft, not bound to the live height: the row above already shows
 /// that, and a draft that tracked it would fight typing while the desk moves.
 private struct DeskHeightField: View {
+    let desk: DeskController
     @ObservedObject var conn: DeskConnection
     @State private var draft = ""
 
@@ -645,7 +663,7 @@ private struct DeskHeightField: View {
     }
 
     private func commit() {
-        if let target = parseCm(draft) { conn.moveTo(cm: target) }   // clamps to this desk's range
+        if let target = parseCm(draft) { desk.move(conn, to: target) }   // clamps to this desk's range
         draft = ""
     }
 }

@@ -59,11 +59,18 @@ final class DeskConnection: NSObject, ObservableObject, Identifiable {
     // ControlServer.move() so the MCP client isn't told a short move succeeded.
     private(set) var lastMoveReachedTarget = true
 
+    // Set when the last move's requested height was outside this desk's range and
+    // got clamped. The desk can still "reach" its clamped target, so this is what
+    // tells ControlServer that "move all to X" left this desk somewhere else.
+    private(set) var lastMoveClampedTo: Double?
+
     // Calibration: this desk's absolute height at its lowest position. Per desk
     // because two desks of different models (or panel display offsets) won't
     // share a baseline — and with one global value, "move all to 100 cm" would
-    // leave them at visibly different heights. Persisted keyed by peripheral id;
-    // falls back to the pre-multi-desk global "minCm". Deliberately not clamped
+    // leave them at visibly different heights. Persisted keyed by peripheral id
+    // (the pre-multi-desk global value is migrated once, in DeskController.init,
+    // so a newly added desk starts at 68 rather than inheriting another desk's
+    // calibration). Deliberately not clamped
     // in didSet (the popover's TextField binds to $minCm and a re-entrant clamp
     // fights live typing) — clamp on commit via setMinCm(_:).
     @Published var minCm: Double {
@@ -99,8 +106,8 @@ final class DeskConnection: NSObject, ObservableObject, Identifiable {
 
     // CoreBluetooth's connect() has no timeout: if the target peripheral isn't
     // actually advertising (BLE-asleep, out of range, stale discovery), it hangs
-    // on "Connecting…" forever. This timer hands any stuck connect attempt back
-    // to the owner, which falls back to an active re-scan.
+    // on "Connecting…" forever. This timer cancels a stuck attempt and leaves the
+    // desk disconnected; the owner's scan reconnects it when it next advertises.
     private var connectTimeoutTimer: Timer?
 
     init(peripheral: CBPeripheral, name: String, owner: DeskController) {
@@ -109,9 +116,7 @@ final class DeskConnection: NSObject, ObservableObject, Identifiable {
         self.owner = owner
         advertisedName = name
         let perDesk = UserDefaults.standard.dictionary(forKey: Self.minCmKey) as? [String: Double]
-        minCm = perDesk?[peripheral.identifier.uuidString]
-            ?? UserDefaults.standard.object(forKey: "minCm") as? Double
-            ?? 68.0
+        minCm = perDesk?[peripheral.identifier.uuidString] ?? 68.0
         super.init()
         peripheral.delegate = self
     }
@@ -123,15 +128,25 @@ final class DeskConnection: NSObject, ObservableObject, Identifiable {
     // MARK: - Connection lifecycle (driven by DeskController's central delegate)
 
     func connect(using central: CBCentralManager) {
+        // Calls on a central that isn't powered on are API misuse (logged and
+        // dropped); centralManagerDidUpdateState reconnects once it's back.
+        guard central.state == .poweredOn else { return }
         statusText = "Connecting…"
         central.connect(peripheral)
         scheduleConnectTimeout(central)
     }
 
-    /// Swap in a freshly discovered CBPeripheral for the same id (a re-scan can
-    /// hand back a new object after the old one went stale).
-    func adopt(_ p: CBPeripheral) {
+    /// Swap in a freshly discovered/retrieved CBPeripheral for the same id (a
+    /// re-scan or Bluetooth power cycle can hand back a new object). The old one
+    /// is detached and any pending connect on it cancelled — otherwise a late
+    /// didConnect for it would be routed here (by id) and drive the new object.
+    func adopt(_ p: CBPeripheral, central: CBCentralManager) {
         guard p.identifier == id, p !== peripheral else { return }
+        let old = peripheral
+        old.delegate = nil
+        if old.state != .disconnected, central.state == .poweredOn {
+            central.cancelPeripheralConnection(old)
+        }
         peripheral = p
         p.delegate = self
     }
@@ -152,30 +167,59 @@ final class DeskConnection: NSObject, ObservableObject, Identifiable {
         connect(using: central)   // fast path: works if the desk is already advertising
     }
 
-    func didFailToConnect() {
-        // The timer armed by the failed attempt is now moot — the owner's
-        // re-scan takes over, and a late fire would redundantly cancel it.
+    func didFailToConnect(central: CBCentralManager) {
+        // Retry directly. Relying on didDiscover alone isn't enough: a scan
+        // without AllowDuplicates never re-reports a desk it has already seen,
+        // so the desk would sit on "failed" until the app restarts. The connect
+        // re-arms the timeout, which falls back to a re-scan if this hangs.
+        statusText = "Connection failed — retrying…"
+        connect(using: central)
+    }
+
+    /// Bluetooth went off/unauthorised. No didDisconnectPeripheral arrives in that
+    /// case, so without this the desk stays "ready" with dead characteristics and
+    /// is skipped by the reconnect when Bluetooth comes back.
+    func bluetoothWentDown() {
+        abortMove()
         connectTimeoutTimer?.invalidate()
         connectTimeoutTimer = nil
-        statusText = "Connection failed — retrying…"
+        isReady = false
+        chars = [:]
+        statusText = "Waiting for Bluetooth…"
     }
 
     /// Tear down before the owner forgets this desk.
     func disconnect(central: CBCentralManager) {
+        let wasMoving = isMoving
         stop()
         connectTimeoutTimer?.invalidate()
         connectTimeoutTimer = nil
+        let controller = owner
         owner = nil   // no more aggregate refreshes from a removed desk
-        central.cancelPeripheralConnection(peripheral)
+        guard central.state == .poweredOn else { return }
+        let p = peripheral, id = id
+        guard wasMoving else { central.cancelPeripheralConnection(p); return }
+        // cancelPeripheralConnection doesn't promise that queued writes go out
+        // first, so give the stop writes a moment to land before dropping the
+        // link mid-move. Skip the cancel if the desk was re-added meanwhile.
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard controller?.desks.contains(where: { $0.id == id }) != true else { return }
+            central.cancelPeripheralConnection(p)
+        }
     }
 
     private func scheduleConnectTimeout(_ central: CBCentralManager) {
         connectTimeoutTimer?.invalidate()
         connectTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 6.0, repeats: false) { [weak self] _ in
             Task { @MainActor in
-                guard let self, !self.isReady, let owner = self.owner else { return }
+                guard let self, !self.isReady, let owner = self.owner,
+                      central.state == .poweredOn else { return }
+                // Really leave it disconnected (re-issuing connect here would
+                // just cycle connect/cancel every 6 s and keep the peripheral
+                // in .connecting, so didDiscover could never pick it back up).
                 central.cancelPeripheralConnection(self.peripheral)
-                self.statusText = "Desk not responding — scanning…"
+                self.statusText = "Not responding — searching…"
                 owner.connectionTimedOut(self)
             }
         }
@@ -186,6 +230,7 @@ final class DeskConnection: NSObject, ObservableObject, Identifiable {
     func moveTo(cm: Double) {
         guard isReady else { return }
         let target = min(max(cm, minCm + 0.5), maxCm - 0.5)
+        lastMoveClampedTo = abs(target - cm) > 0.05 ? target : nil
         targetCm = target
         isMoving = true
         lastMoveReachedTarget = false   // set true only if we actually arrive
