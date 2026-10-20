@@ -16,7 +16,7 @@ struct DeskBarApp: App {
         } label: {
             // Glanceable height + connection state in the menu bar.
             Image(nsImage: statusIcon)
-            if desk.isReady {
+            if desk.isPrimaryReady {
                 Text("\(Int(desk.heightCm.rounded()))")
             }
         }
@@ -39,8 +39,8 @@ struct DeskBarApp: App {
     // conversion. Building a pre-colored NSImage with isTemplate = false is the
     // only way to keep the color.
     private var statusIcon: NSImage {
-        let symbolName = desk.isReady ? (desk.isStanding ? "figure.stand" : "chair.lounge") : "chair"
-        let tint: NSColor = desk.isMoving ? .systemOrange : (desk.isReady ? .systemGreen : .systemRed)
+        let symbolName = desk.isPrimaryReady ? (desk.isStanding ? "figure.stand" : "chair.lounge") : "chair"
+        let tint: NSColor = desk.isMoving ? .systemOrange : (desk.isPrimaryReady ? .systemGreen : .systemRed)
         let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
             .applying(NSImage.SymbolConfiguration(paletteColors: [tint]))
         let base = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil) ?? NSImage()

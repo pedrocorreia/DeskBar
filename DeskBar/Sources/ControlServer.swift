@@ -15,7 +15,12 @@ import Foundation
 /// Protocol: one JSON object per line in, one JSON object per line out.
 ///   → {"cmd":"set_height","height_cm":77}
 ///   ← {"ok":true,"ready":true,"height_cm":77.0,"posture":"sitting","moving":false,
-///      "sit_cm":74,"stand_cm":110,"nudge_cm":2,"name":"Desk","desk_id":"…"}
+///      "sit_cm":74,"stand_cm":110,"nudge_cm":2,"name":"Desk","desk_id":"…",
+///      "connected":[{"name":"Desk","desk_id":"…","ready":true,"height_cm":77.0,"moving":false}]}
+/// Movement commands apply to every connected desk; the top-level height/name
+/// describe the primary (first added) one, `connected` lists them all. A move
+/// whose target was outside some desk's range still succeeds but adds a
+/// `warning` naming the desks that were clamped. `scan` adds `found`.
 final class ControlServer {
     static let shared = ControlServer()
 
@@ -228,19 +233,29 @@ private enum DeskBridge {
         }
         action()
         // Let isMoving latch true before we start watching for it to clear.
+        // Watch only the desks this move drove — a single-desk move started from
+        // the popover must neither hold this reply up nor be stopped by its timeout.
         try? await Task.sleep(nanoseconds: 300_000_000)
         let start = Date()
-        while desk.isMoving && Date().timeIntervalSince(start) < moveTimeout {
+        while desk.lastMoveInFlight && Date().timeIntervalSince(start) < moveTimeout {
             try? await Task.sleep(nanoseconds: 150_000_000)
         }
-        if desk.isMoving {
-            desk.stop()
+        if desk.lastMoveInFlight {
+            desk.stopLastMove()
             return snapshot(ok: false, error: "Desk didn't reach the target in time; stopped.")
         }
         if !desk.lastMoveReachedTarget {
-            return snapshot(ok: false, error: "Desk stopped short of the target (obstruction or travel limit).")
+            let names = desk.desksShortOfTarget.map(\.displayName).joined(separator: ", ")
+            return snapshot(ok: false, error: "Stopped short of the target (obstruction or travel limit): \(names).")
         }
-        return snapshot(ok: true)
+        var out = snapshot(ok: true)
+        let clamped = desk.desksClamped.compactMap { d in
+            d.lastMoveClampedTo.map { "\(d.displayName) (\(String(format: "%.1f", $0)) cm)" }
+        }
+        if !clamped.isEmpty {
+            out["warning"] = "Outside the calibrated range, so clamped: \(clamped.joined(separator: ", "))."
+        }
+        return out
     }
 
     private static func scan() async -> [String: Any] {
@@ -248,10 +263,17 @@ private enum DeskBridge {
         let wasPairing = desk.isPairing
         desk.beginPairing()
         try? await Task.sleep(nanoseconds: 5_000_000_000)   // collect for ~5s
-        let desks = desk.discovered.map { ["name": $0.name, "id": $0.id.uuidString, "rssi": $0.rssi] }
+        // Pairing hides desks that are already added, so list those too (flagged)
+        // — otherwise a scan with only your own desk nearby would report "none".
+        let added: [[String: Any]] = desk.desks.map {
+            ["name": $0.displayName, "id": $0.id.uuidString, "connected": true]
+        }
+        let found: [[String: Any]] = desk.discovered.map {
+            ["name": $0.name, "id": $0.id.uuidString, "rssi": $0.rssi, "connected": false]
+        }
         if !wasPairing { desk.cancelPairing() }
         var out = snapshot(ok: true)
-        out["desks"] = desks
+        out["found"] = added + found
         return out
     }
 
@@ -269,6 +291,10 @@ private enum DeskBridge {
             "nudge_cm": desk.nudgeCm,
             "name": desk.deskName,
             "desk_id": desk.deskID,
+            "connected": desk.desks.map { d -> [String: Any] in
+                ["name": d.displayName, "desk_id": d.id.uuidString, "ready": d.isReady,
+                 "height_cm": d.heightCm, "moving": d.isMoving]
+            },
         ]
         if let error { d["error"] = error }
         return d

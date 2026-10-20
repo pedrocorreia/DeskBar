@@ -8,6 +8,7 @@ struct PopoverView: View {
     @FocusState private var intervalFocused: Bool
     @FocusState private var goalFocused: Bool
     @State private var deskListHeight: CGFloat = 0
+    @State private var expandedDeskID: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -15,6 +16,7 @@ struct PopoverView: View {
             Divider()
             presetButtons
             nudgeRow
+            randomizeButton
             Divider()
             presetConfig
             Divider()
@@ -91,6 +93,16 @@ struct PopoverView: View {
         }
         .buttonStyle(.bordered)
         .disabled(!desk.isReady)
+    }
+
+    private var randomizeButton: some View {
+        Button { desk.randomize() } label: {
+            Label("Randomize", systemImage: "dice").frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(!desk.isReady)
+        .help("Move each connected desk to a random height within its range")
     }
 
     private var nudgeLabel: String {
@@ -317,12 +329,40 @@ struct PopoverView: View {
     private var deskSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Desk").font(.caption).foregroundStyle(.secondary)
+                Text(desk.desks.count > 1 ? "Desks — all move together" : "Desk")
+                    .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 if desk.isPairing {
-                    Button("Cancel") { desk.cancelPairing() }.controlSize(.small)
+                    Button("Done") { desk.cancelPairing() }.controlSize(.small)
                 } else {
-                    Button("Switch…") { desk.beginPairing() }.controlSize(.small)
+                    Button("Add…") { desk.beginPairing() }.controlSize(.small)
+                }
+            }
+
+            if desk.desks.isEmpty && desk.pendingIDs.isEmpty && !desk.isPairing {
+                Text("No desk connected — tap Add… to find one.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(desk.desks) { conn in
+                ConnectedDeskRow(desk: desk, conn: conn,
+                                 expanded: expandedDeskID == conn.id) {
+                    expandedDeskID = expandedDeskID == conn.id ? nil : conn.id
+                }
+            }
+            // Saved desks Bluetooth hasn't found yet — removable so a desk that's
+            // gone for good doesn't keep the background scan running forever.
+            ForEach(desk.pendingIDs, id: \.self) { id in
+                HStack(spacing: 6) {
+                    Circle().fill(Color.secondary).frame(width: 7, height: 7)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(desk.nickname(for: id.uuidString) ?? "Saved desk").font(.caption)
+                        Text("Not found yet — searching…").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button { desk.remove(id) } label: { Image(systemName: "xmark.circle") }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("Forget this desk")
                 }
             }
 
@@ -368,44 +408,17 @@ struct PopoverView: View {
                     .frame(height: min(deskListHeight, 220))
                     .onPreferenceChange(DeskListHeightKey.self) { deskListHeight = $0 }
 
-                    Text("Tip: name a desk to pin it to the top; the bars show signal strength.")
+                    Text("Tap a desk to add it; every added desk moves together. Bars show signal strength.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
-            } else {
-                if let nick = desk.nickname(for: desk.deskID) {
-                    Text(nick).font(.caption).foregroundStyle(.primary)
-                    Text(desk.deskName.isEmpty ? "Not connected" : desk.deskName)
-                        .font(.caption2).foregroundStyle(.secondary)
-                } else {
-                    Text(desk.deskName.isEmpty ? "Not connected" : desk.deskName)
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                if !desk.deskID.isEmpty {
-                    DeskNicknameField(desk: desk)
-                }
-                HStack {
-                    Text("Min height").font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    TextField("", value: $desk.minCm,
-                              format: .number.precision(.fractionLength(0...1)))
-                        .frame(width: 44)
-                        .multilineTextAlignment(.trailing)
-                        .textFieldStyle(.roundedBorder)
-                        .controlSize(.small)
-                        // Clamp + refresh the readout on commit, not per keystroke —
-                        // see setMinCm / the nudge field's binding note.
-                        .onSubmit { desk.setMinCm(desk.minCm) }
-                    Text("cm").font(.caption).foregroundStyle(.secondary)
-                }
-                .padding(.top, 2)
             }
         }
     }
 
     private func deskRow(_ d: DiscoveredDesk) -> some View {
-        Button { desk.select(d) } label: {
+        Button { desk.add(d) } label: {
             HStack {
-                Image(systemName: "dot.radiowaves.left.and.right")
+                Image(systemName: "plus.circle")
                 VStack(alignment: .leading, spacing: 1) {
                     if let nick = desk.nickname(for: d.id.uuidString) {
                         Text(nick)
@@ -499,9 +512,10 @@ private struct EditableHeight: View {
     @State private var lastSynced = ""
     @FocusState private var editing: Bool
 
-    /// Live value shown when not editing. Number-less "—" until connected.
+    /// Live value shown when not editing. Number-less "—" while the primary desk
+    /// is disconnected (its heightCm is then stale), even if other desks are up.
     private var display: String {
-        desk.isReady ? String(format: "%.1f cm", desk.heightCm) : "—"
+        desk.isPrimaryReady ? String(format: "%.1f cm", desk.heightCm) : "—"
     }
 
     var body: some View {
@@ -537,23 +551,129 @@ private struct EditableHeight: View {
     /// comma) and move the desk there. Then resign focus; the onChange above
     /// resyncs the field to the live height.
     private func commit() {
-        let cleaned = text
-            .replacingOccurrences(of: "cm", with: "")
-            .replacingOccurrences(of: ",", with: ".")
-            .trimmingCharacters(in: .whitespaces)
-        if let target = Double(cleaned) {
+        if let target = parseCm(text) {
             desk.moveTo(cm: target)
         }
         editing = false
     }
 }
 
-/// A local, free-text nickname for the connected desk (e.g. "My desk"), stored
-/// keyed by its Bluetooth id — it never changes the desk's advertised name.
-/// Buffered in a local draft and committed on Return or blur; resyncs if the
-/// connected desk changes.
+/// Parse a typed height, tolerating a "cm" suffix, spaces, or a decimal comma.
+private func parseCm(_ text: String) -> Double? {
+    Double(text
+        .replacingOccurrences(of: "cm", with: "")
+        .replacingOccurrences(of: ",", with: ".")
+        .trimmingCharacters(in: .whitespaces))
+}
+
+/// One added desk: live status + height, expandable to its per-desk settings
+/// (nickname, calibrated minimum, a height for just this desk) and a Remove button.
+private struct ConnectedDeskRow: View {
+    @ObservedObject var desk: DeskController
+    @ObservedObject var conn: DeskConnection
+    let expanded: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button(action: toggle) {
+                HStack(spacing: 6) {
+                    Circle().fill(color).frame(width: 7, height: 7)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(conn.displayName).font(.caption)
+                        if desk.nickname(for: conn.id.uuidString) != nil || !conn.isReady {
+                            Text(conn.isReady ? conn.advertisedName : conn.statusText)
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    if conn.isReady {
+                        Text(String(format: "%.1f cm", conn.heightCm))
+                            .font(.caption).monospacedDigit()
+                    }
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    DeskNicknameField(desk: desk, id: conn.id.uuidString)
+                    HStack {
+                        Text("Min height").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        TextField("", value: $conn.minCm,
+                                  format: .number.precision(.fractionLength(0...1)))
+                            .frame(width: 44)
+                            .multilineTextAlignment(.trailing)
+                            .textFieldStyle(.roundedBorder)
+                            .controlSize(.small)
+                            // Clamp + refresh the readout on commit, not per keystroke —
+                            // see setMinCm / the nudge field's binding note.
+                            .onSubmit { conn.setMinCm(conn.minCm) }
+                        Text("cm").font(.caption).foregroundStyle(.secondary)
+                    }
+                    DeskHeightField(desk: desk, conn: conn)
+                    Button(role: .destructive) { desk.remove(conn.id) } label: {
+                        Label("Remove desk", systemImage: "xmark.circle")
+                    }
+                    .controlSize(.small)
+                }
+                .padding(.leading, 13)
+            }
+        }
+    }
+
+    private var color: Color {
+        if conn.isMoving { return .orange }
+        return conn.isReady ? .green : .secondary
+    }
+}
+
+/// Moves just this one desk (the header readout and Sit/Stand move all of them).
+/// A plain draft, not bound to the live height: the row above already shows
+/// that, and a draft that tracked it would fight typing while the desk moves.
+private struct DeskHeightField: View {
+    let desk: DeskController
+    @ObservedObject var conn: DeskConnection
+    @State private var draft = ""
+
+    var body: some View {
+        HStack {
+            Text("Height").font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            if conn.isMoving {
+                Button { conn.stop() } label: { Image(systemName: "stop.fill") }
+                    .controlSize(.small)
+                    .tint(.red)
+                    .help("Stop this desk")
+            }
+            TextField(String(format: "%.0f", conn.heightCm), text: $draft)
+                .frame(width: 44)
+                .multilineTextAlignment(.trailing)
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+                .onSubmit(commit)
+            Text("cm").font(.caption).foregroundStyle(.secondary)
+        }
+        .disabled(!conn.isReady)
+        .help("Type a height and press Return to move only this desk")
+    }
+
+    private func commit() {
+        if let target = parseCm(draft) { desk.move(conn, to: target) }   // clamps to this desk's range
+        draft = ""
+    }
+}
+
+/// A local, free-text nickname for a desk (e.g. "My desk"), stored keyed by its
+/// Bluetooth id — it never changes the desk's advertised name. Buffered in a
+/// local draft and committed on Return or blur.
 private struct DeskNicknameField: View {
     @ObservedObject var desk: DeskController
+    let id: String
     @State private var draft = ""
     @FocusState private var focused: Bool
 
@@ -569,13 +689,11 @@ private struct DeskNicknameField: View {
                 .focused($focused)
                 .onSubmit(commit)
                 .onChange(of: focused) { isFocused in if !isFocused { commit() } }
-                .onAppear { draft = desk.nickname(for: desk.deskID) ?? "" }
-                .onChange(of: desk.deskID) { _ in draft = desk.nickname(for: desk.deskID) ?? "" }
+                .onAppear { draft = desk.nickname(for: id) ?? "" }
         }
-        .padding(.top, 2)
     }
 
-    private func commit() { desk.setNickname(draft, for: desk.deskID) }
+    private func commit() { desk.setNickname(draft, for: id) }
 }
 
 /// Measures the desk list's natural content height so it can size to fit when

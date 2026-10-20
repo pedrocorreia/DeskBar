@@ -11,7 +11,8 @@ working in the repo. For user-facing docs see [README.md](README.md); for histor
 DeskBar/                 # The native macOS menu-bar app (Swift)
   Sources/
     DeskBarApp.swift     # @main App: MenuBarExtra, single-instance guard, hotkey wiring
-    DeskController.swift  # CoreBluetooth: connect/scan, the LINAK protocol, move logic
+    DeskController.swift  # CoreBluetooth central: scan/pairing, the desk list, fans commands out to all desks
+    DeskConnection.swift  # One desk's BLE link: the LINAK protocol, height readout, move loop
     ControlServer.swift  # Unix-socket control endpoint the MCP server drives (all BLE stays here)
     HotKeyManager.swift   # Carbon global hotkeys + KeyCombo + ShortcutSettings model
     PopoverView.swift     # The menu-bar popover UI
@@ -79,7 +80,7 @@ claude mcp add deskbar -- /absolute/path/.venv/bin/python /absolute/path/mcp/des
 ```
 
 No `DESK_ADDRESS` or Bluetooth setup for the server — the app handles the desk (pick it once
-via **Desk → Switch…**) and is the single source of truth for presets. MCP servers are
+via **Desk → Add…**) and is the single source of truth for presets. MCP servers are
 long-lived, so after first registering or editing `desk_mcp.py`, reconnect/restart the client.
 
 ## The LINAK DPG1C protocol (the crucial knowledge)
@@ -98,8 +99,8 @@ was the single biggest gotcha. Characteristics share the base
 Move sequence: **(1)** DPG handshake — `7f 86 00` then `7f 86 80 01…11` to `99fa0011`, then
 `FE 00` to command; **(2)** prime with `FE 00` + `FF 00`; **(3)** spam the target to `99fa0031`
 (~every 0.1 s) until reached. Height: little-endian, `cm = raw/100 + base`, where `base` is the
-desk's mechanical minimum — user-calibratable in the app (default 68 cm; see `DeskController.minCm`).
-The Swift app reimplements this in `DeskController.swift`; the Python `prototype/` gets it from
+desk's mechanical minimum — user-calibratable per desk in the app (default 68 cm; see `DeskConnection.minCm`).
+The Swift app reimplements this in `DeskConnection.swift`; the Python `prototype/` gets it from
 `idasen`. (The MCP server no longer does BLE — it relays to the app; see below.)
 
 ## House style / conventions
