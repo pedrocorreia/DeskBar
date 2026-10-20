@@ -117,7 +117,8 @@ DB but filtered out of the search UI, which only shows apps from `~/Applications
 `~/Applications` and register it with Launch Services.
 
 **Adding desks:** open the panel → **Desk → Add…** → tap each desk you want (the strongest
-signal is the one you're sitting at), then **Done**. Every added desk moves together and is
+signal is the one you're sitting at; type a name or desk number in the search field to
+narrow a long list), then **Done**. Every added desk moves together and is
 reconnected on launch; expand a desk's row to rename it, set its minimum height, or remove it.
 
 ## Quick start — the Python prototype

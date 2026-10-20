@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   identifies the desk, and the UUID was only ever there for troubleshooting.
 
 ### Added
+- **Search nearby desks.** While adding desks, a search field filters the list by
+  nickname or advertised name (e.g. type the number on the desk's `DESK ####` label), so the
+  right desk is easy to find in a crowded office. The search clears each time you open **Add…**.
 - **Editable height readout.** Click the large height in the popover, type a target
   (e.g. `100.1`), and press Return to drive the desk straight to that height. Tolerates a
   `cm` suffix and a decimal comma; the value is clamped to the desk's physical range. The
