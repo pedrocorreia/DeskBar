@@ -1,0 +1,27 @@
+# Version updates only. The Swift app has no dependencies (house rule: system
+# frameworks only), so this covers the workflows' actions and the Python bits.
+version: 2
+updates:
+  # The actions pinned in .github/workflows (checkout, setup-python,
+  # upload-artifact). Old major versions stop getting runner fixes and
+  # eventually fail on deprecated Node runtimes, so keep them current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # requirements.txt files only set floors (e.g. mcp>=2.0), so installs already
+  # get the latest release. "increase" raises a floor when a new version ships:
+  # the PR's CI run confirms it still imports, and the file then records the
+  # newest version known to work. Monthly and grouped: one PR, not one per package.
+  - package-ecosystem: pip
+    directories: [/mcp, /prototype]
+    schedule:
+      interval: monthly
+    versioning-strategy: increase
+    groups:
+      python:
+        patterns: ["*"]
