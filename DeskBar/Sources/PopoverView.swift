@@ -9,6 +9,7 @@ struct PopoverView: View {
     @FocusState private var goalFocused: Bool
     @State private var deskListHeight: CGFloat = 0
     @State private var expandedDeskID: UUID?
+    @State private var deskSearch = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -374,45 +375,85 @@ struct PopoverView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 } else {
-                    let named = desk.discovered
+                    let visible = desk.discovered.filter(matchesDeskSearch)
+                    let named = visible
                         .filter { desk.nickname(for: $0.id.uuidString) != nil }
                         .sorted { (desk.nickname(for: $0.id.uuidString) ?? "")
                             .localizedCaseInsensitiveCompare(desk.nickname(for: $1.id.uuidString) ?? "")
                             == .orderedAscending }
-                    let others = desk.discovered
+                    let others = visible
                         .filter { desk.nickname(for: $0.id.uuidString) == nil }
                         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
-                    // Cap the list at a fixed height and scroll past it, so a
-                    // roomful of desks can't stretch the popover off-screen. It
-                    // still shrinks to fit when only a few are found.
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 6) {
-                            if !named.isEmpty {
-                                Text("Saved").font(.caption2).foregroundStyle(.secondary)
-                                ForEach(named) { deskRow($0) }
-                            }
-                            if !others.isEmpty {
+                    deskSearchField
+
+                    if visible.isEmpty {
+                        Text("No nearby desks match “\(deskSearch.trimmingCharacters(in: .whitespaces))”.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        // Cap the list at a fixed height and scroll past it, so a
+                        // roomful of desks can't stretch the popover off-screen. It
+                        // still shrinks to fit when only a few are found.
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 6) {
                                 if !named.isEmpty {
-                                    Text("Other desks").font(.caption2).foregroundStyle(.secondary)
-                                        .padding(.top, 2)
+                                    Text("Saved").font(.caption2).foregroundStyle(.secondary)
+                                    ForEach(named) { deskRow($0) }
                                 }
-                                ForEach(others) { deskRow($0) }
+                                if !others.isEmpty {
+                                    if !named.isEmpty {
+                                        Text("Other desks").font(.caption2).foregroundStyle(.secondary)
+                                            .padding(.top, 2)
+                                    }
+                                    ForEach(others) { deskRow($0) }
+                                }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(GeometryReader { g in
+                                Color.clear.preference(key: DeskListHeightKey.self, value: g.size.height)
+                            })
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(GeometryReader { g in
-                            Color.clear.preference(key: DeskListHeightKey.self, value: g.size.height)
-                        })
+                        .frame(height: min(deskListHeight, 220))
+                        .onPreferenceChange(DeskListHeightKey.self) { deskListHeight = $0 }
                     }
-                    .frame(height: min(deskListHeight, 220))
-                    .onPreferenceChange(DeskListHeightKey.self) { deskListHeight = $0 }
 
                     Text("Tap a desk to add it; every added desk moves together. Bars show signal strength.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
             }
         }
+        // A query left over from the last pairing session would hide desks the
+        // next time the picker opens, so each session starts unfiltered.
+        .onChange(of: desk.isPairing) { _ in deskSearch = "" }
+    }
+
+    private var deskSearchField: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Search by name or number", text: $deskSearch)
+                .textFieldStyle(.plain)
+            if !deskSearch.isEmpty {
+                Button { deskSearch = "" } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear search")
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .font(.caption)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary))
+    }
+
+    /// Matches the nickname or the advertised name (e.g. "DESK 4821"), ignoring
+    /// case and diacritics, so typing the number on the desk's sticker finds it.
+    private func matchesDeskSearch(_ d: DiscoveredDesk) -> Bool {
+        let query = deskSearch.trimmingCharacters(in: .whitespaces)
+        if query.isEmpty { return true }
+        let nick = desk.nickname(for: d.id.uuidString) ?? ""
+        return d.name.localizedStandardContains(query) || nick.localizedStandardContains(query)
     }
 
     private func deskRow(_ d: DiscoveredDesk) -> some View {

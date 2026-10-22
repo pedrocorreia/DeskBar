@@ -40,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP move replies list every connected desk's height when there's more than one; a move
   that stops short names the desk(s) that didn't arrive, and a target outside a desk's
   calibrated range is reported as a warning naming the clamped desk(s).
+- **Search nearby desks.** While adding desks, a search field filters the list by
+  nickname or advertised name (e.g. type the number on the desk's `DESK ####` label), so the
+  right desk is easy to find in a crowded office. The search clears each time you open **Add…**.
 - **Editable height readout.** Click the large height in the popover, type a target
   (e.g. `100.1`), and press Return to drive the desk straight to that height. Tolerates a
   `cm` suffix and a decimal comma; the value is clamped to the desk's physical range. The
