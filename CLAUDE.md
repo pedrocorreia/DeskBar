@@ -137,10 +137,15 @@ cd DeskBar && ./tools/make_icns.sh   # rewrites AppIcon.icns
 
 ## Release process
 
-1. Update [CHANGELOG.md](CHANGELOG.md) (Keep a Changelog format).
+1. Update [CHANGELOG.md](CHANGELOG.md) (Keep a Changelog format): move the Unreleased
+   entries under a new `## [X.Y.Z] - YYYY-MM-DD` heading and add its compare link at the bottom.
 2. Bump `CFBundleShortVersionString` / `CFBundleVersion` in `DeskBar/Info.plist`.
 3. Commit, then `git tag -a vX.Y.Z` and push the tag.
-4. `gh release create vX.Y.Z --title "…" --notes-file notes.md`.
+4. The [Release workflow](.github/workflows/release.yml) checks the tag against Info.plist
+   and the CHANGELOG, builds the app, and creates a **draft** release with `DeskBar-X.Y.Z.zip`
+   and notes from that CHANGELOG section plus install steps. Edit the notes on GitHub if you
+   like, then **Publish**. To preview the notes or catch a mismatch before tagging, run
+   `.github/scripts/release-notes.sh vX.Y.Z`.
 
 Semver: additive features → minor; fixes only → patch.
 
