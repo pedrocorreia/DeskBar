@@ -151,3 +151,8 @@ verification is manual with a desk in range (and best done watching the physical
 hand near its controller). The pure, testable islands if you want coverage: `KeyCombo`
 encode/decode and `HotKeyManager.applyBindings` duplicate detection. **Never** commit changes
 to movement logic without testing against a real desk.
+
+**CI** ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on every PR and push to
+`main`, and is compile-only: it builds the app with `build.sh` on a macOS runner (the zipped
+`DeskBar.app` is attached to the run for 14 days) and compiles/imports the Python scripts. A
+green run means it builds — not that it moves a desk.
