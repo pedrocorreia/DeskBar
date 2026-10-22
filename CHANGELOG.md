@@ -8,21 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- **Control several desks at once.** The Desk section's **Switch…** is now **Add…**: pick as
-  many nearby desks as you like and every command — Sit/Stand, nudge, typed height, global
-  hotkeys, posture auto-switch, and MCP tools — moves all connected desks together. Each desk
-  runs its own handshake and move loop and is listed with its own live height; nudges are
-  relative to each desk's own height. All added desks are reconnected on launch (your previous
-  desk is migrated automatically). The menu bar shows the first connected desk's height.
-- **Randomize.** A small button under the nudge row sends each connected desk to its own
-  random height between its minimum and maximum.
-- **Move a single desk.** Expand a desk's row and type a height under Name / Min height to
-  move just that desk (with its own Stop button while it moves); the main controls still
-  move all desks together.
 - The **minimum height** calibration is now per desk (expand a desk's row), so desks of
-  different models reach the same absolute height. Existing calibration carries over.
-- MCP `get_status` and move replies list every connected desk's height when there's more
-  than one; a move that stops short names the desk(s) that didn't arrive.
+  different models reach the same absolute height. Your existing calibration moves to the desk
+  it was set for; newly added desks start at the 68 cm default.
+- The control socket's status reply lists every added desk under `connected`, and `scan`
+  returns `found` — which now includes desks already added (flagged), so MCP `list_desks`
+  no longer reports "No desks found" when only your own desk is nearby.
 
 ### Fixed
 - `build.sh` builds with Command Line Tools on the macOS 27 SDK, where SwiftUI's `@State`
@@ -33,6 +24,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   identifies the desk, and the UUID was only ever there for troubleshooting.
 
 ### Added
+- **Control several desks at once.** The Desk section's **Switch…** is now **Add…**: pick as
+  many nearby desks as you like and every command — Sit/Stand, nudge, typed height, global
+  hotkeys, posture auto-switch, and MCP tools — moves all connected desks together. Each desk
+  runs its own handshake and move loop and is listed with its own live height; nudges are
+  relative to each desk's own height. All added desks are reconnected on launch (your previous
+  desk is migrated automatically); a saved desk Bluetooth can't find yet is listed as
+  searching (and can be forgotten) rather than dropped. The menu bar, header readout and
+  posture tracking follow the first desk you added.
+- **Move a single desk.** Expand a desk's row and type a height under Name / Min height to
+  move just that desk (with its own Stop button while it moves); the main controls still
+  move all desks together.
+- **Randomize.** A small button under the nudge row sends each connected desk to its own
+  random height between its minimum and maximum.
+- MCP move replies list every connected desk's height when there's more than one; a move
+  that stops short names the desk(s) that didn't arrive, and a target outside a desk's
+  calibrated range is reported as a warning naming the clamped desk(s).
 - **Search nearby desks.** While adding desks, a search field filters the list by
   nickname or advertised name (e.g. type the number on the desk's `DESK ####` label), so the
   right desk is easy to find in a crowded office. The search clears each time you open **Add…**.

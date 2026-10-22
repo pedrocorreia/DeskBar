@@ -175,7 +175,9 @@ final class PostureMonitor: NSObject, ObservableObject {
         let now = Date()
         rolloverIfNeeded()
 
-        let nowPresent = desk.isReady && !screenLocked
+        // The primary desk specifically: its heightCm is what isStanding reads, and
+        // it goes stale while that desk is down even if other desks are connected.
+        let nowPresent = desk.isPrimaryReady && !screenLocked
             && Self.systemIdleSeconds() < idleLimitSeconds
 
         guard nowPresent else {

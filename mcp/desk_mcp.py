@@ -36,7 +36,8 @@ server = MCPServer(
         "to read the current height and presets, `stand`/`sit` for the saved presets, "
         "`set_height` for an absolute height in cm, `nudge` for a relative move, and "
         "`stop` to cancel a move in progress. "
-        "Heights are in centimetres, roughly 62–127. Movement tools block until the "
+        "Heights are in centimetres, each desk's minimum to minimum + 65 (68–133 by "
+        "default). Movement tools block until the "
         "desk arrives. If calls report the app isn't reachable, launch DeskBar.app."
     ),
 )
@@ -96,7 +97,7 @@ def _presets(r: dict) -> str:
 
 def _desk_lines(r: dict) -> str:
     """Per-desk heights, only when more than one desk is connected."""
-    desks = r.get("desks") or []
+    desks = r.get("connected") or []
     if len(desks) < 2:
         return ""
     rows = []
@@ -110,6 +111,9 @@ def _describe(r: dict) -> str:
     """Human-readable line for a status/move reply."""
     if not r.get("ok"):
         return r.get("error", "Something went wrong talking to the DeskBar app.")
+    if len(r.get("connected") or []) > 1:
+        # The top-level height is just the primary desk's — list them all instead.
+        return "Connected desks:" + _desk_lines(r) + "\n" + _presets(r)
     if not r.get("ready"):
         return ("DeskBar is running but hasn't connected to the desk yet "
                 "(finding it over Bluetooth). " + _presets(r))
@@ -120,9 +124,11 @@ def _describe(r: dict) -> str:
 def _moved(r: dict) -> str:
     if not r.get("ok"):
         return r.get("error", "Couldn't move the desk.") + _desk_lines(r)
-    if len(r.get("desks") or []) > 1:
-        return "Moved all connected desks." + _desk_lines(r)
-    return f"Moved the desk to {r.get('height_cm', 0):.1f} cm ({r.get('posture', 'unknown')})."
+    warning = f" Note: {r['warning']}" if r.get("warning") else ""
+    if len(r.get("connected") or []) > 1:
+        return "Moved all connected desks." + warning + _desk_lines(r)
+    return (f"Moved the desk to {r.get('height_cm', 0):.1f} cm "
+            f"({r.get('posture', 'unknown')})." + warning)
 
 
 @server.tool()
@@ -145,7 +151,7 @@ async def sit() -> str:
 
 @server.tool()
 async def set_height(height_cm: float) -> str:
-    """Move the desk(s) to an absolute height in centimetres (clamped to ~62–127)."""
+    """Move the desk(s) to an absolute height in centimetres (clamped to each desk's calibrated range)."""
     return _moved(await _request({"cmd": "set_height", "height_cm": height_cm}))
 
 
@@ -167,14 +173,15 @@ async def stop() -> str:
 
 @server.tool()
 async def list_desks() -> str:
-    """Scan for nearby LINAK desks and list them with signal strength."""
+    """Scan for nearby LINAK desks and list them with signal strength, plus the desks already added in DeskBar."""
     r = await _request({"cmd": "scan"}, timeout=15.0)
     if not r.get("ok"):
         return r.get("error", "Couldn't scan for desks.")
-    desks = r.get("desks", [])
+    desks = r.get("found", [])
     if not desks:
         return "No desks found. Wake the desk by tapping its controller, then try again."
-    rows = [f"  {d.get('name') or '(unnamed)'} — {d.get('id')} (RSSI {d.get('rssi')})"
+    rows = [f"  {d.get('name') or '(unnamed)'} — {d.get('id')} "
+            + ("(added in DeskBar)" if d.get("connected") else f"(RSSI {d.get('rssi')})")
             for d in desks]
     return "Nearby desks:\n" + "\n".join(rows)
 
