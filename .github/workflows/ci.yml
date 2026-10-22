@@ -1,0 +1,64 @@
+name: CI
+
+# Compile checks only. The app's real behaviour needs a physical desk in
+# Bluetooth range, which no runner has — so CI proves the code builds and
+# imports, and movement changes still get tested by hand (see CLAUDE.md).
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A newer push to the same PR makes the older run moot.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  app:
+    name: Build DeskBar.app
+    # Apple-silicon runner: build.sh targets arm64-apple-macos13.0.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        working-directory: DeskBar
+        run: ./build.sh
+
+      # ditto, not a plain upload: upload-artifact drops the executable bit,
+      # which would leave the downloaded bundle unlaunchable.
+      - name: Package
+        working-directory: DeskBar
+        run: ditto -c -k --keepParent DeskBar.app DeskBar.zip
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeskBar-${{ github.sha }}
+          path: DeskBar/DeskBar.zip
+          retention-days: 14
+
+  python:
+    name: Check Python (MCP server + prototype)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install MCP server dependencies
+        run: python -m pip install -r mcp/requirements.txt
+
+      - name: Compile all scripts
+        run: python -m py_compile mcp/*.py prototype/*.py
+
+      # Importing (not just compiling) catches MCP SDK API changes, e.g. the
+      # MCPServer import path moving. Safe: the server only starts under __main__.
+      - name: Import MCP server
+        working-directory: mcp
+        run: python -c "import desk_mcp"
