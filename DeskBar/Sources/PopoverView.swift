@@ -372,7 +372,7 @@ struct PopoverView: View {
                     deskSearchField
 
                     if visible.isEmpty {
-                        Text("No nearby desks match “\(deskSearch)”.")
+                        Text("No nearby desks match “\(deskSearch.trimmingCharacters(in: .whitespaces))”.")
                             .font(.caption).foregroundStyle(.secondary)
                     } else {
                         // Cap the list at a fixed height and scroll past it, so a
@@ -422,6 +422,7 @@ struct PopoverView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Clear search")
+                .accessibilityLabel("Clear search")
             }
         }
         .font(.caption)
