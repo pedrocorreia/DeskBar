@@ -27,10 +27,15 @@ struct PopoverView: View {
         .onPreferenceChange(PopoverHeightKey.self) { contentHeight = $0 }
     }
 
-    /// The screen's usable height (below the menu bar, above the Dock), less a
-    /// little breathing room so the popover never touches the edge.
+    /// The usable height (below the menu bar, above the Dock) of the screen the
+    /// popover opens on, less a little breathing room so it never touches the
+    /// edge. That's the screen under the pointer, which just clicked the menu bar
+    /// item — not NSScreen.main, which follows the key window and can be another
+    /// display.
     private var maxPopoverHeight: CGFloat {
-        (NSScreen.main?.visibleFrame.height ?? 800) - 24
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
+        return (screen?.visibleFrame.height ?? 800) - 24
     }
 
     private var content: some View {
