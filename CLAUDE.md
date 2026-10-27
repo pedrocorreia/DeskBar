@@ -11,7 +11,8 @@ working in the repo. For user-facing docs see [README.md](README.md); for histor
 DeskBar/                 # The native macOS menu-bar app (Swift)
   Sources/
     DeskBarApp.swift     # @main App: MenuBarExtra, single-instance guard, hotkey wiring
-    DeskController.swift  # CoreBluetooth central: scan/pairing, the desk list, fans commands out to all desks
+    DeskController.swift  # CoreBluetooth central: scan/pairing, the desk list, "my desk", fans commands
+                          #   out to all desks or only the user's (All desks / My desk toggle)
     DeskConnection.swift  # One desk's BLE link: the LINAK protocol, height readout, move loop
     ControlServer.swift  # Unix-socket control endpoint the MCP server drives (all BLE stays here)
     HotKeyManager.swift   # Carbon global hotkeys + KeyCombo + ShortcutSettings model

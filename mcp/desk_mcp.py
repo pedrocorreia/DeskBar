@@ -30,8 +30,10 @@ server = MCPServer(
     name="deskbar",
     version="2.0.0",
     instructions=(
-        "Controls the LINAK standing desk(s) connected in the DeskBar macOS app — "
-        "when several desks are connected, every movement applies to all of them. "
+        "Controls the LINAK standing desk(s) connected in the DeskBar macOS app. "
+        "When several desks are connected, movements follow the app's All desks / "
+        "My desk toggle (`all_desks` in replies) — it starts on My desk, the user's "
+        "own desk, each launch; `stop` always halts every desk. "
         "Use `get_status` "
         "to read the current height and presets, `stand`/`sit` for the saved presets, "
         "`set_height` for an absolute height in cm, `nudge` for a relative move, and "
@@ -112,7 +114,7 @@ def _describe(r: dict) -> str:
     if not r.get("ok"):
         return r.get("error", "Something went wrong talking to the DeskBar app.")
     if len(r.get("connected") or []) > 1:
-        # The top-level height is just the primary desk's — list them all instead.
+        # The top-level height is just the user's own desk's — list them all instead.
         return "Connected desks:" + _desk_lines(r) + "\n" + _presets(r)
     if not r.get("ready"):
         return ("DeskBar is running but hasn't connected to the desk yet "
@@ -126,6 +128,9 @@ def _moved(r: dict) -> str:
         return r.get("error", "Couldn't move the desk.") + _desk_lines(r)
     warning = f" Note: {r['warning']}" if r.get("warning") else ""
     if len(r.get("connected") or []) > 1:
+        if not r.get("all_desks", True):
+            return (f"Moved your desk ({r.get('name') or 'Desk'}) to "
+                    f"{r.get('height_cm', 0):.1f} cm." + warning + _desk_lines(r))
         return "Moved all connected desks." + warning + _desk_lines(r)
     return (f"Moved the desk to {r.get('height_cm', 0):.1f} cm "
             f"({r.get('posture', 'unknown')})." + warning)
@@ -163,7 +168,7 @@ async def nudge(delta_cm: float) -> str:
 
 @server.tool()
 async def stop() -> str:
-    """Immediately stop the desk if it's moving (e.g. to cancel a bad move)."""
+    """Immediately stop every desk that's moving (e.g. to cancel a bad move)."""
     r = await _request({"cmd": "stop"})
     if not r.get("ok"):
         return r.get("error", "Couldn't stop the desk.")

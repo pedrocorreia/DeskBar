@@ -17,8 +17,11 @@ import Foundation
 ///   ← {"ok":true,"ready":true,"height_cm":77.0,"posture":"sitting","moving":false,
 ///      "sit_cm":74,"stand_cm":110,"nudge_cm":2,"name":"Desk","desk_id":"…",
 ///      "connected":[{"name":"Desk","desk_id":"…","ready":true,"height_cm":77.0,"moving":false}]}
-/// Movement commands apply to every connected desk; the top-level height/name
-/// describe the primary (first added) one, `connected` lists them all. A move
+/// Movement commands apply to the desks the popover's All desks / My desk toggle
+/// targets (`all_desks`); `stop` halts every desk. `ready` means those targeted
+/// desks can take a move. The top-level height/name describe the user's own desk
+/// (marked or named "My desk"/"Mine", else the first added), `connected` lists
+/// them all. A move
 /// whose target was outside some desk's range still succeeds but adds a
 /// `warning` naming the desks that were clamped. `scan` adds `found`.
 final class ControlServer {
@@ -228,7 +231,7 @@ private enum DeskBridge {
     /// rather than silently claiming success.
     private static func move(_ action: () -> Void) async -> [String: Any] {
         let desk = DeskController.shared
-        guard desk.isReady else {
+        guard desk.canControl else {
             return snapshot(ok: false, error: "Desk isn't connected yet — DeskBar is still finding it.")
         }
         action()
@@ -282,7 +285,7 @@ private enum DeskBridge {
         let desk = DeskController.shared
         var d: [String: Any] = [
             "ok": ok,
-            "ready": desk.isReady,
+            "ready": desk.canControl,   // same check move() guards on
             "height_cm": desk.heightCm,
             "posture": desk.isStanding ? "standing" : "sitting",
             "moving": desk.isMoving,
@@ -291,6 +294,7 @@ private enum DeskBridge {
             "nudge_cm": desk.nudgeCm,
             "name": desk.deskName,
             "desk_id": desk.deskID,
+            "all_desks": desk.controlAllDesks,
             "connected": desk.desks.map { d -> [String: Any] in
                 ["name": d.displayName, "desk_id": d.id.uuidString, "ready": d.isReady,
                  "height_cm": d.heightCm, "moving": d.isMoving]

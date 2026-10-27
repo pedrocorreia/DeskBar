@@ -15,6 +15,7 @@ struct PopoverView: View {
         VStack(alignment: .leading, spacing: 14) {
             header
             Divider()
+            if desk.hasSeveralDesks { controlTarget }
             presetButtons
             nudgeRow
             randomizeButton
@@ -51,6 +52,21 @@ struct PopoverView: View {
         }
     }
 
+    /// Which desks the main controls below move. Only shown with several desks —
+    /// with one, both choices are the same desk.
+    private var controlTarget: some View {
+        Picker("", selection: $desk.controlAllDesks) {
+            Text("All desks").tag(true)
+            Text("My desk").tag(false)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .controlSize(.small)
+        .help(desk.hasChosenMyDesk
+              ? "Move every connected desk, or only \(desk.myDeskLabel)"
+              : "Move every connected desk, or only \(desk.myDeskLabel). Mark or name a desk “My desk” to choose which is yours.")
+    }
+
     private var presetButtons: some View {
         HStack(spacing: 10) {
             presetButton(title: "Sit", cm: desk.sitCm, symbol: "chair.lounge",
@@ -58,7 +74,7 @@ struct PopoverView: View {
             presetButton(title: "Stand", cm: desk.standCm, symbol: "figure.stand",
                          fill: .green, action: desk.goStand)
         }
-        .disabled(!desk.isReady)
+        .disabled(!desk.canControl)
     }
 
     private func presetButton(title: String, cm: Double, symbol: String,
@@ -74,7 +90,7 @@ struct PopoverView: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
             .background(fill, in: RoundedRectangle(cornerRadius: 8))
-            .opacity(desk.isReady ? 1 : 0.5)
+            .opacity(desk.canControl ? 1 : 0.5)
         }
         .buttonStyle(.plain)
     }
@@ -84,16 +100,20 @@ struct PopoverView: View {
             Button { desk.nudge(-desk.nudgeCm) } label: {
                 Label(nudgeLabel, systemImage: "minus").frame(maxWidth: .infinity)
             }
+            .disabled(!desk.canControl)
+            // Stop halts every desk regardless of the toggle, so it stays usable
+            // whenever any desk is up — e.g. your desk dropped while another moves.
             Button { desk.stop() } label: {
                 Label("Stop", systemImage: "stop.fill").frame(maxWidth: .infinity)
             }
             .tint(.red)
+            .disabled(!desk.isReady)
             Button { desk.nudge(desk.nudgeCm) } label: {
                 Label(nudgeLabel, systemImage: "plus").frame(maxWidth: .infinity)
             }
+            .disabled(!desk.canControl)
         }
         .buttonStyle(.bordered)
-        .disabled(!desk.isReady)
     }
 
     private var randomizeButton: some View {
@@ -102,8 +122,10 @@ struct PopoverView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .disabled(!desk.isReady)
-        .help("Move each connected desk to a random height within its range")
+        .disabled(!desk.canControl)
+        .help(desk.controlAllDesks
+              ? "Move each connected desk to a random height within its range"
+              : "Move your desk to a random height within its range")
     }
 
     private var nudgeLabel: String {
@@ -123,7 +145,9 @@ struct PopoverView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .disabled(!desk.isReady)
+            // Always your desk's height, whatever the toggle above says — so it
+            // has to be live, not just any desk.
+            .disabled(!desk.isPrimaryReady)
 
             HStack {
                 Text("Nudge amount").font(.caption).foregroundStyle(.secondary)
@@ -330,7 +354,7 @@ struct PopoverView: View {
     private var deskSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(desk.desks.count > 1 ? "Desks — all move together" : "Desk")
+                Text(!desk.hasSeveralDesks ? "Desk" : desk.controlAllDesks ? "Desks — all move together" : "Desks")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 if desk.isPairing {
@@ -338,6 +362,14 @@ struct PopoverView: View {
                 } else {
                     Button("Add…") { desk.beginPairing() }.controlSize(.small)
                 }
+            }
+
+            if desk.hasSeveralDesks && !desk.hasChosenMyDesk {
+                Label("Expand your desk and click 'Mark as my desk' so you can manage only your desk in the main controls",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.yellow)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if desk.desks.isEmpty && desk.pendingIDs.isEmpty && !desk.isPairing {
@@ -417,7 +449,7 @@ struct PopoverView: View {
                         .onPreferenceChange(DeskListHeightKey.self) { deskListHeight = $0 }
                     }
 
-                    Text("Tap a desk to add it; every added desk moves together. Bars show signal strength.")
+                    Text("Tap a desk to add it. Then expand yours and click “Mark as my desk”. Bars show signal strength.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
             }
@@ -566,7 +598,7 @@ private struct EditableHeight: View {
             .monospacedDigit()
             .frame(minWidth: 130, alignment: .leading)   // reserve stable width; .fixedSize() shifts layout as digits change
             .focused($editing)
-            .disabled(!desk.isReady)
+            .disabled(!desk.canControl)
             .onSubmit(commit)
             // Single-parameter onChange: the two-parameter form is macOS 14+,
             // but this app deploys to macOS 13.
@@ -621,7 +653,14 @@ private struct ConnectedDeskRow: View {
                 HStack(spacing: 6) {
                     Circle().fill(color).frame(width: 7, height: 7)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(conn.displayName).font(.caption)
+                        HStack(spacing: 3) {
+                            Text(conn.displayName).font(.caption)
+                            if isMine {
+                                Image(systemName: "person.fill")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                    .help("Your desk — posture tracking and Set Sit/Stand use it")
+                            }
+                        }
                         if desk.nickname(for: conn.id.uuidString) != nil || !conn.isReady {
                             Text(conn.isReady ? conn.advertisedName : conn.statusText)
                                 .font(.caption2).foregroundStyle(.secondary)
@@ -657,8 +696,19 @@ private struct ConnectedDeskRow: View {
                         Text("cm").font(.caption).foregroundStyle(.secondary)
                     }
                     DeskHeightField(desk: desk, conn: conn)
-                    Button(role: .destructive) { desk.remove(conn.id) } label: {
-                        Label("Remove desk", systemImage: "xmark.circle")
+                    HStack {
+                        if desk.hasSeveralDesks {
+                            Button { desk.markAsMyDesk(conn.id) } label: {
+                                Label(isMine ? "My desk" : "Mark as my desk",
+                                      systemImage: isMine ? "person.fill" : "person")
+                            }
+                            .disabled(isMine)
+                            .help("Use this desk for posture tracking, Set Sit/Stand and the My desk controls")
+                        }
+                        Spacer()
+                        Button(role: .destructive) { desk.remove(conn.id) } label: {
+                            Label("Remove desk", systemImage: "xmark.circle")
+                        }
                     }
                     .controlSize(.small)
                 }
@@ -671,9 +721,12 @@ private struct ConnectedDeskRow: View {
         if conn.isMoving { return .orange }
         return conn.isReady ? .green : .secondary
     }
+
+    /// Only worth flagging when there's more than one desk to tell apart.
+    private var isMine: Bool { desk.hasSeveralDesks && desk.primary === conn }
 }
 
-/// Moves just this one desk (the header readout and Sit/Stand move all of them).
+/// Moves just this one desk, whatever the All desks / My desk toggle says.
 /// A plain draft, not bound to the live height: the row above already shows
 /// that, and a draft that tracked it would fight typing while the desk moves.
 private struct DeskHeightField: View {
@@ -709,8 +762,9 @@ private struct DeskHeightField: View {
     }
 }
 
-/// A local, free-text nickname for a desk (e.g. "My desk"), stored keyed by its
-/// Bluetooth id — it never changes the desk's advertised name. Buffered in a
+/// A local, free-text nickname for a desk, stored keyed by its Bluetooth id — it
+/// never changes the desk's advertised name. "My desk" or "Mine" (any case) marks
+/// it as the user's own desk; see DeskController.primary. Buffered in a
 /// local draft and committed on Return or blur.
 private struct DeskNicknameField: View {
     @ObservedObject var desk: DeskController
@@ -724,6 +778,7 @@ private struct DeskNicknameField: View {
             Spacer()
             TextField("e.g. My desk", text: $draft)
                 .frame(width: 150)
+                .help("Name it “My desk” or “Mine” to mark it as yours")
                 .multilineTextAlignment(.trailing)
                 .textFieldStyle(.roundedBorder)
                 .controlSize(.small)

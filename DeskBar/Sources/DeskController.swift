@@ -8,12 +8,13 @@ struct DiscoveredDesk: Identifiable, Equatable {
 }
 
 /// Owns the CoreBluetooth central and the set of connected desks, and fans every
-/// command out to all of them — "Stand" or "100 cm" moves every connected desk.
+/// command out to the desks the controls target — all of them, or just the
+/// user's own desk (see `controlAllDesks`).
 ///
 /// The single-desk-shaped API (heightCm, isReady, moveTo, goSit, …) is kept as an
-/// aggregate so hotkeys, PostureMonitor and ControlServer drive all desks without
+/// aggregate so hotkeys and ControlServer drive the targeted desks without
 /// knowing there's more than one. Reads like heightCm/isStanding come from the
-/// *primary* desk: the first one added.
+/// *primary* desk: the user's own desk (see `primary`).
 @MainActor
 final class DeskController: NSObject, ObservableObject {
     // `_desk.wrappedValue` in DeskBarApp.init() reads a @StateObject before
@@ -36,6 +37,9 @@ final class DeskController: NSObject, ObservableObject {
     @Published private(set) var statusText = "Starting…"
     @Published private(set) var isMoving = false         // any desk moving
     @Published private(set) var deskName = ""
+    // Which desk heightCm reads. PostureMonitor watches it to re-baseline when the
+    // user's desk changes, rather than mistaking the height jump for a real move.
+    @Published private(set) var primaryID: UUID?
 
     // Bluetooth-level problem (off / denied), which trumps per-desk status.
     private var centralStatus: String?
@@ -67,6 +71,13 @@ final class DeskController: NSObject, ObservableObject {
     @Published var sitCm: Double  { didSet { UserDefaults.standard.set(sitCm, forKey: "sitCm") } }
     @Published var standCm: Double { didSet { UserDefaults.standard.set(standCm, forKey: "standCm") } }
 
+    // Whether the main controls (Sit/Stand, nudge, Stop, Randomize, typed height,
+    // hotkeys, MCP) move every connected desk or only the user's own. Posture
+    // auto-switch and Set Sit/Stand always use the user's desk regardless.
+    // Deliberately not persisted: every launch starts on "My desk", so a stray
+    // hotkey can't move a whole room's desks because of a choice made days ago.
+    @Published var controlAllDesks = false
+
     // Local, user-assigned desk nicknames, keyed by CoreBluetooth peripheral
     // UUID. Purely local — it never touches the desk's advertised BLE name.
     @Published private var nicknames: [String: String] {
@@ -84,7 +95,29 @@ final class DeskController: NSObject, ObservableObject {
         let trimmed = (name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { nicknames.removeValue(forKey: id) }
         else { nicknames[id] = trimmed }
-        refresh()   // deskName may be the nickname
+        // Naming a desk "Mine" is as deliberate as marking it, and the newer
+        // choice should win — so it takes over any earlier explicit mark too.
+        if isMyDeskNickname(id) { myDeskID = id }
+        refresh()   // deskName may be the nickname, and the nickname picks the primary desk
+    }
+
+    // Desk explicitly marked "my desk" from its row (CoreBluetooth UUID string),
+    // taking precedence over the nickname rule. Persisted.
+    @Published private var myDeskID: String? {
+        didSet { UserDefaults.standard.set(myDeskID, forKey: "myDeskID") }
+    }
+
+    func markAsMyDesk(_ id: UUID) {
+        myDeskID = id.uuidString
+        refresh()
+    }
+
+    /// Nicknames that mark a desk as the user's own, compared case-insensitively.
+    private static let myDeskNames: Set<String> = ["mine", "my desk"]
+
+    func isMyDeskNickname(_ id: String) -> Bool {
+        guard let n = nickname(for: id) else { return false }
+        return Self.myDeskNames.contains(n.lowercased())
     }
 
     // Nudge step, user-configurable (persisted). Clamped to a sane physical
@@ -120,18 +153,57 @@ final class DeskController: NSObject, ObservableObject {
         standCm = d.object(forKey: "standCm") as? Double ?? 110.0
         nudgeCm = d.object(forKey: "nudgeCm") as? Double ?? 2.0
         nicknames = (d.dictionary(forKey: "deskNicknames") as? [String: String]) ?? [:]
+        myDeskID = d.string(forKey: "myDeskID")
         super.init()
         Self.migrateLegacyMinCm()
         central = CBCentralManager(delegate: self, queue: .main)
     }
 
-    /// The desk whose height the menu bar, header and posture tracking use: the
-    /// first one added, connected or not. Deliberately sticky — handing off to
+    /// The user's own desk — the one the menu bar, header, Set Sit/Stand and
+    /// posture tracking use: the desk marked with "Mark as my desk" (or most
+    /// recently named "My desk"/"Mine"), else the first desk nicknamed so, else
+    /// the first one added, connected or not. Deliberately sticky — handing off to
     /// whichever desk is up would make heightCm jump to another desk's height
-    /// whenever the first one blips, which PostureMonitor would read as a real
+    /// whenever this one blips, which PostureMonitor would read as a real
     /// sit/stand change. While it's down, isPrimaryReady is false instead.
-    var primary: DeskConnection? { desks.first }
-    var readyDesks: [DeskConnection] { desks.filter(\.isReady) }
+    ///
+    /// nil while the chosen desk is still pending (CoreBluetooth hasn't handed it
+    /// back yet, e.g. just after launch): falling back to the first-added desk
+    /// then would point "My desk", hotkeys, MCP and auto-switch at what may be a
+    /// colleague's desk.
+    var primary: DeskConnection? {
+        guard let id = chosenMyDeskID else { return desks.first }
+        return desks.first(where: { $0.id.uuidString == id })
+    }
+
+    /// The desk the user picked (marked or named), among added *and* pending
+    /// desks; nil if they haven't picked one. A stale mark for a desk that's in
+    /// neither list is ignored.
+    private var chosenMyDeskID: String? {
+        let ids = desks.map(\.id.uuidString) + pendingIDs.map(\.uuidString)
+        if let myDeskID, ids.contains(myDeskID) { return myDeskID }
+        return ids.first(where: isMyDeskNickname)
+    }
+
+    /// True when the user has picked their desk (marked or named), rather than
+    /// it being the first-added fallback — even if it hasn't reconnected yet.
+    var hasChosenMyDesk: Bool { chosenMyDeskID != nil }
+
+    /// More than one saved desk, counting ones still being searched for — so the
+    /// my-desk UI (toggle, Mark button, banner) doesn't vanish just because your
+    /// desk hasn't reconnected yet while another one has.
+    var hasSeveralDesks: Bool { desks.count + pendingIDs.count > 1 }
+
+    /// Your desk by name for UI text, with a generic stand-in while it's pending.
+    var myDeskLabel: String { deskName.isEmpty ? "your desk" : deskName }
+
+    /// Desks the main controls drive, per the All desks / My desk toggle.
+    var targetDesks: [DeskConnection] {
+        controlAllDesks ? desks : (primary.map { [$0] } ?? [])
+    }
+
+    /// At least one targeted desk can take a command.
+    var canControl: Bool { targetDesks.contains(where: \.isReady) }
 
     var isStanding: Bool { heightCm >= (sitCm + standCm) / 2 }
 
@@ -139,7 +211,7 @@ final class DeskController: NSObject, ObservableObject {
     /// MAC — same identifier `desk.py scan` prints).
     var deskID: String { primary?.id.uuidString ?? "" }
 
-    // MARK: - Public actions (all desks)
+    // MARK: - Public actions (targeted desks)
 
     func goSit()   { moveTo(cm: sitCm) }
     func goStand() { moveTo(cm: standCm) }
@@ -165,8 +237,18 @@ final class DeskController: NSObject, ObservableObject {
         conn.moveTo(cm: cm)
     }
 
+    /// Stops every desk, whatever the All desks / My desk toggle says: it's the
+    /// safety control, and a desk may still be moving from an earlier all-desks
+    /// move or its own row's height field.
     func stop() {
         for d in desks { d.stop() }
+    }
+
+    /// Posture auto-switch: only ever the user's own desk, whatever the toggle says
+    /// — it's switching *your* posture, not the room's.
+    func switchMyDeskPosture() {
+        guard let mine = primary, mine.isReady else { return }
+        move(mine, to: isStanding ? sitCm : standCm)
     }
 
     /// Stop only the desks in the last all-desks move (ControlServer's timeout),
@@ -176,7 +258,7 @@ final class DeskController: NSObject, ObservableObject {
     }
 
     private func moveEach(_ target: (DeskConnection) -> Double) {
-        lastMoveDesks = readyDesks
+        lastMoveDesks = targetDesks.filter(\.isReady)
         for d in lastMoveDesks { d.moveTo(cm: target(d)) }
     }
 
@@ -212,6 +294,10 @@ final class DeskController: NSObject, ObservableObject {
 
     /// Disconnect a desk and stop reconnecting to it on launch.
     func remove(_ id: UUID) {
+        // Don't let a forgotten desk silently become "mine" again if re-added —
+        // neither through the mark nor through a "Mine" nickname.
+        if myDeskID == id.uuidString { myDeskID = nil }
+        if isMyDeskNickname(id.uuidString) { nicknames.removeValue(forKey: id.uuidString) }
         if pendingIDs.contains(id) {
             pendingIDs.removeAll { $0 == id }
             saveDesks()
@@ -269,6 +355,8 @@ final class DeskController: NSObject, ObservableObject {
     /// Re-derive the aggregate published state from the per-desk connections.
     func refresh() {
         let p = primary
+        // Before heightCm, so observers see the desk switch ahead of its height jump.
+        setIfChanged(\.primaryID, p?.id)
         setIfChanged(\.heightCm, p?.heightCm ?? 0)
         setIfChanged(\.isReady, desks.contains(where: \.isReady))
         setIfChanged(\.isPrimaryReady, p?.isReady ?? false)
@@ -287,6 +375,9 @@ final class DeskController: NSObject, ObservableObject {
         if isPairing { return "Searching for desks…" }
         if desks.isEmpty { return pendingIDs.isEmpty ? "No desk — add one below" : "Looking for your desk…" }
         if let moving = desks.first(where: \.isMoving) { return moving.statusText }
+        // Your chosen desk hasn't reconnected: say so, rather than a "Connected"
+        // borrowed from some other desk while My desk controls are greyed out.
+        if hasChosenMyDesk && primary == nil { return "Looking for your desk…" }
         if desks.count == 1 { return desks[0].statusText }
         let ready = desks.filter(\.isReady).count
         return ready == desks.count ? "\(ready) desks connected" : "\(ready) of \(desks.count) desks connected"
