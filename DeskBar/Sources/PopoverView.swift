@@ -15,7 +15,7 @@ struct PopoverView: View {
         VStack(alignment: .leading, spacing: 14) {
             header
             Divider()
-            if desk.desks.count > 1 { controlTarget }
+            if desk.hasSeveralDesks { controlTarget }
             presetButtons
             nudgeRow
             randomizeButton
@@ -63,8 +63,8 @@ struct PopoverView: View {
         .labelsHidden()
         .controlSize(.small)
         .help(desk.hasChosenMyDesk
-              ? "Move every connected desk, or only \(desk.deskName)"
-              : "Move every connected desk, or only \(desk.deskName). Mark or name a desk “My desk” to choose which is yours.")
+              ? "Move every connected desk, or only \(desk.myDeskLabel)"
+              : "Move every connected desk, or only \(desk.myDeskLabel). Mark or name a desk “My desk” to choose which is yours.")
     }
 
     private var presetButtons: some View {
@@ -354,7 +354,7 @@ struct PopoverView: View {
     private var deskSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(desk.desks.count < 2 ? "Desk" : desk.controlAllDesks ? "Desks — all move together" : "Desks")
+                Text(!desk.hasSeveralDesks ? "Desk" : desk.controlAllDesks ? "Desks — all move together" : "Desks")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 if desk.isPairing {
@@ -364,7 +364,7 @@ struct PopoverView: View {
                 }
             }
 
-            if desk.desks.count > 1 && !desk.hasChosenMyDesk {
+            if desk.hasSeveralDesks && !desk.hasChosenMyDesk {
                 Label("Expand your desk and click 'Mark as my desk' so you can manage only your desk in the main controls",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.caption2)
@@ -697,7 +697,7 @@ private struct ConnectedDeskRow: View {
                     }
                     DeskHeightField(desk: desk, conn: conn)
                     HStack {
-                        if desk.desks.count > 1 {
+                        if desk.hasSeveralDesks {
                             Button { desk.markAsMyDesk(conn.id) } label: {
                                 Label(isMine ? "My desk" : "Mark as my desk",
                                       systemImage: isMine ? "person.fill" : "person")
@@ -723,7 +723,7 @@ private struct ConnectedDeskRow: View {
     }
 
     /// Only worth flagging when there's more than one desk to tell apart.
-    private var isMine: Bool { desk.desks.count > 1 && desk.primary === conn }
+    private var isMine: Bool { desk.hasSeveralDesks && desk.primary === conn }
 }
 
 /// Moves just this one desk, whatever the All desks / My desk toggle says.

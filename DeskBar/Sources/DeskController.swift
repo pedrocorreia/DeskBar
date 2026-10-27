@@ -189,6 +189,14 @@ final class DeskController: NSObject, ObservableObject {
     /// it being the first-added fallback — even if it hasn't reconnected yet.
     var hasChosenMyDesk: Bool { chosenMyDeskID != nil }
 
+    /// More than one saved desk, counting ones still being searched for — so the
+    /// my-desk UI (toggle, Mark button, banner) doesn't vanish just because your
+    /// desk hasn't reconnected yet while another one has.
+    var hasSeveralDesks: Bool { desks.count + pendingIDs.count > 1 }
+
+    /// Your desk by name for UI text, with a generic stand-in while it's pending.
+    var myDeskLabel: String { deskName.isEmpty ? "your desk" : deskName }
+
     /// Desks the main controls drive, per the All desks / My desk toggle.
     var targetDesks: [DeskConnection] {
         controlAllDesks ? desks : (primary.map { [$0] } ?? [])
@@ -367,6 +375,9 @@ final class DeskController: NSObject, ObservableObject {
         if isPairing { return "Searching for desks…" }
         if desks.isEmpty { return pendingIDs.isEmpty ? "No desk — add one below" : "Looking for your desk…" }
         if let moving = desks.first(where: \.isMoving) { return moving.statusText }
+        // Your chosen desk hasn't reconnected: say so, rather than a "Connected"
+        // borrowed from some other desk while My desk controls are greyed out.
+        if hasChosenMyDesk && primary == nil { return "Looking for your desk…" }
         if desks.count == 1 { return desks[0].statusText }
         let ready = desks.filter(\.isReady).count
         return ready == desks.count ? "\(ready) desks connected" : "\(ready) of \(desks.count) desks connected"
