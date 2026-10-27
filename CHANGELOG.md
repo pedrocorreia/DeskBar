@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no longer reports "No desks found" when only your own desk is nearby.
 
 ### Fixed
+- The popover no longer runs off the bottom of the screen with many desks added: it scrolls
+  once it would outgrow the screen it opens on.
 - `build.sh` builds with Command Line Tools on the macOS 27 SDK, where SwiftUI's `@State`
   macro plugin is missing — it falls back to the newest pre-27 SDK installed.
 

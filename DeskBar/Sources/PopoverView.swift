@@ -7,11 +7,45 @@ struct PopoverView: View {
     @Environment(\.openWindow) private var openWindow
     @FocusState private var intervalFocused: Bool
     @FocusState private var goalFocused: Bool
-    @State private var deskListHeight: CGFloat = 0
     @State private var expandedDeskID: UUID?
     @State private var deskSearch = ""
+    @State private var contentHeight: CGFloat = 0
+    @State private var screenHeight = NSScreen.main?.visibleFrame.height ?? 800
 
+    // MenuBarExtra's window grows with its content and never scrolls, so a long
+    // desk list pushed the bottom of the popover off-screen. Wrap the content in
+    // a ScrollView only once it's measured taller than the screen allows: while
+    // it fits, the window takes the content's natural size from the very first
+    // frame (an always-on ScrollView needs an explicit height, which starts at 0
+    // until measured and makes the window jump), and nothing rubber-bands.
+    // Crossing the cap swaps branches and rebuilds the content, so a field being
+    // edited at that moment loses focus — rare, and far better than clipping.
     var body: some View {
+        Group {
+            if contentHeight > maxPopoverHeight {
+                ScrollView { measuredContent }
+                    .frame(height: maxPopoverHeight)
+            } else {
+                measuredContent
+            }
+        }
+        .frame(width: 280)
+        .background(WindowScreenReader { screenHeight = $0 })
+        .onPreferenceChange(PopoverHeightKey.self) { contentHeight = $0 }
+    }
+
+    /// The usable height (below the menu bar, above the Dock) of the screen the
+    /// popover's window is on, less a little breathing room so it never touches
+    /// the edge.
+    private var maxPopoverHeight: CGFloat { screenHeight - 24 }
+
+    private var measuredContent: some View {
+        content.background(GeometryReader { g in
+            Color.clear.preference(key: PopoverHeightKey.self, value: g.size.height)
+        })
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
             Divider()
@@ -29,7 +63,6 @@ struct PopoverView: View {
             footer
         }
         .padding(16)
-        .frame(width: 280)
     }
 
     private var header: some View {
@@ -423,30 +456,23 @@ struct PopoverView: View {
                         Text("No nearby desks match “\(deskSearch.trimmingCharacters(in: .whitespaces))”.")
                             .font(.caption).foregroundStyle(.secondary)
                     } else {
-                        // Cap the list at a fixed height and scroll past it, so a
-                        // roomful of desks can't stretch the popover off-screen. It
-                        // still shrinks to fit when only a few are found.
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 6) {
-                                if !named.isEmpty {
-                                    Text("Saved").font(.caption2).foregroundStyle(.secondary)
-                                    ForEach(named) { deskRow($0) }
-                                }
-                                if !others.isEmpty {
-                                    if !named.isEmpty {
-                                        Text("Other desks").font(.caption2).foregroundStyle(.secondary)
-                                            .padding(.top, 2)
-                                    }
-                                    ForEach(others) { deskRow($0) }
-                                }
+                        // No scroll view of its own: a roomful of desks is handled
+                        // by the whole popover scrolling, and a nested one would
+                        // swallow the scroll wheel on its way to the footer.
+                        VStack(alignment: .leading, spacing: 6) {
+                            if !named.isEmpty {
+                                Text("Saved").font(.caption2).foregroundStyle(.secondary)
+                                ForEach(named) { deskRow($0) }
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(GeometryReader { g in
-                                Color.clear.preference(key: DeskListHeightKey.self, value: g.size.height)
-                            })
+                            if !others.isEmpty {
+                                if !named.isEmpty {
+                                    Text("Other desks").font(.caption2).foregroundStyle(.secondary)
+                                        .padding(.top, 2)
+                                }
+                                ForEach(others) { deskRow($0) }
+                            }
                         }
-                        .frame(height: min(deskListHeight, 220))
-                        .onPreferenceChange(DeskListHeightKey.self) { deskListHeight = $0 }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
                     Text("Tap a desk to add it. Then expand yours and click “Mark as my desk”. Bars show signal strength.")
@@ -792,11 +818,55 @@ private struct DeskNicknameField: View {
     private func commit() { desk.setNickname(draft, for: id) }
 }
 
-/// Measures the desk list's natural content height so it can size to fit when
-/// short and cap (then scroll) when long.
-private struct DeskListHeightKey: PreferenceKey {
+/// Measures the popover content's natural height, to decide when to scroll.
+private struct PopoverHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
+    }
+}
+
+/// Reports the usable height of the screen the hosting window is on — when the
+/// view lands in its window, when the window moves to another display, and each
+/// time it becomes key (i.e. the popover is reopened, possibly from the menu bar
+/// on another display). Reading the window's own screen avoids both NSScreen.main
+/// (follows whichever window is key) and the pointer (can wander off mid-move).
+private struct WindowScreenReader: NSViewRepresentable {
+    let onChange: (CGFloat) -> Void
+
+    func makeNSView(context: Context) -> ReaderView {
+        let v = ReaderView()
+        v.onChange = onChange
+        return v
+    }
+
+    func updateNSView(_ nsView: ReaderView, context: Context) {
+        nsView.onChange = onChange
+    }
+
+    final class ReaderView: NSView {
+        var onChange: ((CGFloat) -> Void)?
+        private var observers: [NSObjectProtocol] = []
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            observers.forEach(NotificationCenter.default.removeObserver)
+            observers = []
+            guard let window else { return }
+            for name in [NSWindow.didChangeScreenNotification, NSWindow.didBecomeKeyNotification] {
+                observers.append(NotificationCenter.default.addObserver(
+                    forName: name, object: window, queue: .main) { [weak self] _ in self?.report() })
+            }
+            report()
+        }
+
+        private func report() {
+            guard let height = window?.screen?.visibleFrame.height else { return }
+            // Deferred: this can run inside a SwiftUI update pass, where writing
+            // @State directly trips "modifying state during view update".
+            DispatchQueue.main.async { [weak self] in self?.onChange?(height) }
+        }
+
+        deinit { observers.forEach(NotificationCenter.default.removeObserver) }
     }
 }
