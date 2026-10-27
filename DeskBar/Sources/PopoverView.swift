@@ -100,16 +100,20 @@ struct PopoverView: View {
             Button { desk.nudge(-desk.nudgeCm) } label: {
                 Label(nudgeLabel, systemImage: "minus").frame(maxWidth: .infinity)
             }
+            .disabled(!desk.canControl)
+            // Stop halts every desk regardless of the toggle, so it stays usable
+            // whenever any desk is up — e.g. your desk dropped while another moves.
             Button { desk.stop() } label: {
                 Label("Stop", systemImage: "stop.fill").frame(maxWidth: .infinity)
             }
             .tint(.red)
+            .disabled(!desk.isReady)
             Button { desk.nudge(desk.nudgeCm) } label: {
                 Label(nudgeLabel, systemImage: "plus").frame(maxWidth: .infinity)
             }
+            .disabled(!desk.canControl)
         }
         .buttonStyle(.bordered)
-        .disabled(!desk.canControl)
     }
 
     private var randomizeButton: some View {
@@ -445,7 +449,7 @@ struct PopoverView: View {
                         .onPreferenceChange(DeskListHeightKey.self) { deskListHeight = $0 }
                     }
 
-                    Text("Tap a desk to add it. Name yours “My desk” to track posture with it. Bars show signal strength.")
+                    Text("Tap a desk to add it. Then expand yours and click “Mark as my desk”. Bars show signal strength.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
             }

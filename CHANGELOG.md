@@ -25,21 +25,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Control several desks at once.** The Desk section's **Switch…** is now **Add…**: pick as
-  many nearby desks as you like and every command — Sit/Stand, nudge, typed height, global
-  hotkeys, posture auto-switch, and MCP tools — moves all connected desks together. Each desk
+  many nearby desks as you like and drive them together or one at a time (see **All desks /
+  My desk toggle** below). Each desk
   runs its own handshake and move loop and is listed with its own live height; nudges are
   relative to each desk's own height. All added desks are reconnected on launch (your previous
   desk is migrated automatically); a saved desk Bluetooth can't find yet is listed as
   searching (and can be forgotten) rather than dropped. The menu bar, header readout and
-  posture tracking follow the first desk you added.
+  posture tracking follow your desk (see **Your desk** below).
 - **Move a single desk.** Expand a desk's row and type a height under Name / Min height to
-  move just that desk (with its own Stop button while it moves); the main controls still
-  move all desks together.
+  move just that desk (with its own Stop button while it moves), whatever the toggle says.
 - **Randomize.** A small button under the nudge row sends each connected desk to its own
   random height between its minimum and maximum.
 - MCP move replies list every connected desk's height when there's more than one; a move
   that stops short names the desk(s) that didn't arrive, and a target outside a desk's
   calibrated range is reported as a warning naming the clamped desk(s).
+- **Your desk.** Expand a desk and click **Mark as my desk**, or nickname it “My desk” or
+  “Mine” (any case), to make it yours (shown with a person icon); the most recent choice wins.
+  The menu bar, header readout, Set Sit / Set Stand, standing/sitting metrics, reminders and
+  posture auto-switch all follow your desk; with none chosen, the first added desk is used and
+  the Desks section shows a warning saying how to pick one. While your chosen desk is still
+  reconnecting, nothing stands in for it — the readout shows “—” and My desk controls are
+  disabled. Switching your desk re-baselines posture tracking instead of logging a move.
+- **All desks / My desk toggle.** With more than one desk, a toggle above Sit/Stand chooses
+  whether the main controls — Sit/Stand, nudge, Randomize, the typed height, global hotkeys
+  and MCP moves — drive every connected desk or only yours. **It starts on My desk every
+  launch**, so if you use several desks your hotkeys and MCP moves now drive only your desk
+  until you switch to All desks. Stop (button, hotkey and MCP) always halts every desk, and
+  posture auto-switch always moves only yours. MCP replies include `all_desks`, and `ready`
+  now reflects the desks the toggle targets.
 - **Search nearby desks.** While adding desks, a search field filters the list by
   nickname or advertised name (e.g. type the number on the desk's `DESK ####` label), so the
   right desk is easy to find in a crowded office. The search clears each time you open **Add…**.

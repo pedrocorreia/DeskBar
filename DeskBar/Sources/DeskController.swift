@@ -37,6 +37,9 @@ final class DeskController: NSObject, ObservableObject {
     @Published private(set) var statusText = "Starting…"
     @Published private(set) var isMoving = false         // any desk moving
     @Published private(set) var deskName = ""
+    // Which desk heightCm reads. PostureMonitor watches it to re-baseline when the
+    // user's desk changes, rather than mistaking the height jump for a real move.
+    @Published private(set) var primaryID: UUID?
 
     // Bluetooth-level problem (off / denied), which trumps per-desk status.
     private var centralStatus: String?
@@ -163,18 +166,28 @@ final class DeskController: NSObject, ObservableObject {
     /// whichever desk is up would make heightCm jump to another desk's height
     /// whenever this one blips, which PostureMonitor would read as a real
     /// sit/stand change. While it's down, isPrimaryReady is false instead.
+    ///
+    /// nil while the chosen desk is still pending (CoreBluetooth hasn't handed it
+    /// back yet, e.g. just after launch): falling back to the first-added desk
+    /// then would point "My desk", hotkeys, MCP and auto-switch at what may be a
+    /// colleague's desk.
     var primary: DeskConnection? {
-        chosenMyDesk ?? desks.first
+        guard let id = chosenMyDeskID else { return desks.first }
+        return desks.first(where: { $0.id.uuidString == id })
     }
 
-    private var chosenMyDesk: DeskConnection? {
-        desks.first(where: { $0.id.uuidString == myDeskID })
-            ?? desks.first(where: { isMyDeskNickname($0.id.uuidString) })
+    /// The desk the user picked (marked or named), among added *and* pending
+    /// desks; nil if they haven't picked one. A stale mark for a desk that's in
+    /// neither list is ignored.
+    private var chosenMyDeskID: String? {
+        let ids = desks.map(\.id.uuidString) + pendingIDs.map(\.uuidString)
+        if let myDeskID, ids.contains(myDeskID) { return myDeskID }
+        return ids.first(where: isMyDeskNickname)
     }
 
     /// True when the user has picked their desk (marked or named), rather than
-    /// it being the first-added fallback.
-    var hasChosenMyDesk: Bool { chosenMyDesk != nil }
+    /// it being the first-added fallback — even if it hasn't reconnected yet.
+    var hasChosenMyDesk: Bool { chosenMyDeskID != nil }
 
     /// Desks the main controls drive, per the All desks / My desk toggle.
     var targetDesks: [DeskConnection] {
@@ -216,8 +229,11 @@ final class DeskController: NSObject, ObservableObject {
         conn.moveTo(cm: cm)
     }
 
+    /// Stops every desk, whatever the All desks / My desk toggle says: it's the
+    /// safety control, and a desk may still be moving from an earlier all-desks
+    /// move or its own row's height field.
     func stop() {
-        for d in targetDesks { d.stop() }
+        for d in desks { d.stop() }
     }
 
     /// Posture auto-switch: only ever the user's own desk, whatever the toggle says
@@ -270,8 +286,10 @@ final class DeskController: NSObject, ObservableObject {
 
     /// Disconnect a desk and stop reconnecting to it on launch.
     func remove(_ id: UUID) {
-        // Don't let a forgotten desk silently become "mine" again if re-added.
+        // Don't let a forgotten desk silently become "mine" again if re-added —
+        // neither through the mark nor through a "Mine" nickname.
         if myDeskID == id.uuidString { myDeskID = nil }
+        if isMyDeskNickname(id.uuidString) { nicknames.removeValue(forKey: id.uuidString) }
         if pendingIDs.contains(id) {
             pendingIDs.removeAll { $0 == id }
             saveDesks()
@@ -329,6 +347,8 @@ final class DeskController: NSObject, ObservableObject {
     /// Re-derive the aggregate published state from the per-desk connections.
     func refresh() {
         let p = primary
+        // Before heightCm, so observers see the desk switch ahead of its height jump.
+        setIfChanged(\.primaryID, p?.id)
         setIfChanged(\.heightCm, p?.heightCm ?? 0)
         setIfChanged(\.isReady, desks.contains(where: \.isReady))
         setIfChanged(\.isPrimaryReady, p?.isReady ?? false)

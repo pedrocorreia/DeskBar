@@ -125,6 +125,7 @@ final class PostureMonitor: NSObject, ObservableObject {
         UNUserNotificationCenter.current().delegate = self
         observeScreenLock()
         observeHeightChanges()
+        observeDeskSwitch()
         if remindersEnabled { enableReminders() }
         lastAccountAt = Date()
         tick()   // seed immediately so "Today" isn't blank until the first interval
@@ -146,6 +147,29 @@ final class PostureMonitor: NSObject, ObservableObject {
                 guard abs(newH - self.lastResetHeight) >= 0.3 else { return }
                 self.lastResetHeight = newH
                 self.resetCountdownAfterMove()
+            }
+            .store(in: &cancellables)
+    }
+
+    /// The user marked or named a different desk as theirs, so heightCm is about
+    /// to jump to that desk's height. Flush the time so far and pause, so the next
+    /// tick resumes through the same re-baselining path as a reconnect — instead
+    /// of the height sink resetting the countdown and tick() logging a posture
+    /// change that never happened.
+    private func observeDeskSwitch() {
+        desk.$primaryID
+            .dropFirst()
+            .removeDuplicates()
+            .sink { [weak self] _ in
+                guard let self, self.present else { return }
+                let now = Date()
+                self.account(upTo: now)
+                self.present = false
+                self.lastAccountAt = now
+                self.scheduleReminder()   // present == false → clears the countdown
+                // Resume now rather than up to a tick interval later. Deferred so
+                // it runs after refresh() has published the new desk's height.
+                Task { @MainActor [weak self] in self?.tick() }
             }
             .store(in: &cancellables)
     }

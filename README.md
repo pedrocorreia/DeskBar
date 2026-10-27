@@ -31,8 +31,10 @@ controller (a desk advertising as `DESK ####`).
   your own interval (optionally auto-switching the desk).
 - 🎯 **Daily standing goal & 7-day history** — set a target and watch your standing trend at a
   glance, with a goal line on the chart.
-- 🔀 **Multiple desks at once** — add several desks; Sit/Stand, nudges, typed heights, hotkeys
-  and MCP commands move **all** of them together. Each desk shows its own live height.
+- 🔀 **Multiple desks at once** — add several desks and mark one as **your desk**. An
+  **All desks / My desk** toggle chooses whether Sit/Stand, nudges, Randomize, typed heights,
+  hotkeys and MCP commands move all of them or only yours (it starts on My desk each launch);
+  Stop always halts every desk. Each desk shows its own live height.
 - 🏷️ **Nameable desks** — assign a local nickname to each desk; the switcher shows the number
   *and* your name (the advertised Bluetooth name is left untouched).
 - 🔌 **Auto-connect & auto-reconnect** to your saved desks on launch.
@@ -118,8 +120,10 @@ DB but filtered out of the search UI, which only shows apps from `~/Applications
 
 **Adding desks:** open the panel → **Desk → Add…** → tap each desk you want (the strongest
 signal is the one you're sitting at; type a name or desk number in the search field to
-narrow a long list), then **Done**. Every added desk moves together and is
-reconnected on launch; expand a desk's row to rename it, set its minimum height, or remove it.
+narrow a long list), then **Done**. Added desks are reconnected on launch; expand a desk's
+row to rename it, set its minimum height, **Mark as my desk**, or remove it. Your desk (or one
+nicknamed “My desk” / “Mine”; the first added if none) drives the menu-bar height, Set Sit /
+Set Stand and posture tracking, and is the one the **My desk** side of the toggle moves.
 
 ## Quick start — the Python prototype
 

@@ -18,8 +18,10 @@ import Foundation
 ///      "sit_cm":74,"stand_cm":110,"nudge_cm":2,"name":"Desk","desk_id":"…",
 ///      "connected":[{"name":"Desk","desk_id":"…","ready":true,"height_cm":77.0,"moving":false}]}
 /// Movement commands apply to the desks the popover's All desks / My desk toggle
-/// targets (`all_desks`); the top-level height/name describe the user's own desk
-/// (named "My desk"/"Mine", else the first added), `connected` lists them all. A move
+/// targets (`all_desks`); `stop` halts every desk. `ready` means those targeted
+/// desks can take a move. The top-level height/name describe the user's own desk
+/// (marked or named "My desk"/"Mine", else the first added), `connected` lists
+/// them all. A move
 /// whose target was outside some desk's range still succeeds but adds a
 /// `warning` naming the desks that were clamped. `scan` adds `found`.
 final class ControlServer {
@@ -283,7 +285,7 @@ private enum DeskBridge {
         let desk = DeskController.shared
         var d: [String: Any] = [
             "ok": ok,
-            "ready": desk.isReady,
+            "ready": desk.canControl,   // same check move() guards on
             "height_cm": desk.heightCm,
             "posture": desk.isStanding ? "standing" : "sitting",
             "moving": desk.isMoving,
