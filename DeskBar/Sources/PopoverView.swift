@@ -10,8 +10,30 @@ struct PopoverView: View {
     @State private var deskListHeight: CGFloat = 0
     @State private var expandedDeskID: UUID?
     @State private var deskSearch = ""
+    @State private var contentHeight: CGFloat = 0
 
+    // MenuBarExtra's window grows with its content and never scrolls, so a long
+    // desk list pushed the bottom of the popover off-screen. Scroll the whole
+    // popover instead, sized to the content until it would outgrow the screen —
+    // same measure-then-cap approach as the pairing list below.
     var body: some View {
+        ScrollView {
+            content
+                .background(GeometryReader { g in
+                    Color.clear.preference(key: PopoverHeightKey.self, value: g.size.height)
+                })
+        }
+        .frame(width: 280, height: min(contentHeight, maxPopoverHeight))
+        .onPreferenceChange(PopoverHeightKey.self) { contentHeight = $0 }
+    }
+
+    /// The screen's usable height (below the menu bar, above the Dock), less a
+    /// little breathing room so the popover never touches the edge.
+    private var maxPopoverHeight: CGFloat {
+        (NSScreen.main?.visibleFrame.height ?? 800) - 24
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
             Divider()
@@ -29,7 +51,6 @@ struct PopoverView: View {
             footer
         }
         .padding(16)
-        .frame(width: 280)
     }
 
     private var header: some View {
@@ -786,6 +807,15 @@ private struct DeskNicknameField: View {
     }
 
     private func commit() { desk.setNickname(draft, for: id) }
+}
+
+/// Measures the whole popover's natural height, kept separate from
+/// DeskListHeightKey so the pairing list's measurement doesn't leak into it.
+private struct PopoverHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
 }
 
 /// Measures the desk list's natural content height so it can size to fit when
