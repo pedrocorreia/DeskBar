@@ -1,0 +1,49 @@
+name: Release
+
+# Pushing a vX.Y.Z tag builds the app and creates a *draft* GitHub release with
+# the zipped DeskBar.app and notes taken from CHANGELOG.md. It stays a draft so
+# the notes can be polished and the build sanity-checked before anyone can
+# download it — publishing is a deliberate click on the release page.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # create the release and upload the zip
+
+jobs:
+  release:
+    name: Build and draft release
+    # Apple-silicon runner: build.sh targets arm64-apple-macos13.0.
+    runs-on: macos-15
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Runs before the build so a forgotten version bump or changelog entry
+      # fails in seconds, with a message saying what to fix.
+      - name: Check version and extract notes
+        run: .github/scripts/release-notes.sh "$TAG" > "$RUNNER_TEMP/notes.md"
+
+      - name: Build
+        working-directory: DeskBar
+        run: ./build.sh
+
+      # ditto, not zip: it keeps the bundle's executable bit and signature intact.
+      - name: Package
+        working-directory: DeskBar
+        run: ditto -c -k --keepParent DeskBar.app "DeskBar-${TAG#v}.zip"
+
+      # Re-running the job for the same tag replaces the zip on the existing
+      # draft instead of failing because the release already exists.
+      - name: Create or update draft release
+        run: |
+          ZIP="DeskBar/DeskBar-${TAG#v}.zip"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP" --clobber
+          else
+            gh release create "$TAG" "$ZIP" --draft --verify-tag \
+              --title "DeskBar $TAG" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
