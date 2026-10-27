@@ -366,7 +366,7 @@ final class PostureMonitor: NSObject, ObservableObject {
     }
 
     private func switchPosture() {
-        if desk.isStanding { desk.goSit() } else { desk.goStand() }
+        desk.switchMyDeskPosture()
     }
 
     // MARK: - Formatting for the UI
